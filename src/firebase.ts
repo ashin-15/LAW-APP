@@ -16,10 +16,13 @@ import {
   getDocs,
   deleteDoc,
   doc,
+  setDoc,
   query,
   orderBy,
   serverTimestamp,
+  limit,
 } from 'firebase/firestore';
+import type { Message, ChatSession } from './types';
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -36,21 +39,19 @@ export const db = getFirestore(app);
 
 const googleProvider = new GoogleAuthProvider();
 
-// Handle redirect result on page load (for when popup fails and we fall back to redirect)
+// Handle redirect result on page load
 getRedirectResult(auth).catch((error) => {
   console.error('Redirect result error:', error);
 });
 
 export async function signInWithGoogle() {
   try {
-    // Try popup first
     const result = await signInWithPopup(auth, googleProvider);
     return result.user;
   } catch (error: unknown) {
     const err = error as { code?: string; message?: string };
     console.error('Popup sign-in failed, trying redirect:', err.code);
-    
-    // If popup blocked or COOP error, fall back to redirect
+
     if (
       err.code === 'auth/popup-blocked' ||
       err.code === 'auth/popup-closed-by-user' ||
@@ -58,7 +59,7 @@ export async function signInWithGoogle() {
       err.message?.includes('Cross-Origin-Opener-Policy')
     ) {
       await signInWithRedirect(auth, googleProvider);
-      return null; // Redirect will reload the page
+      return null;
     }
     throw error;
   }
@@ -107,5 +108,65 @@ export async function getDocuments(uid: string): Promise<FirestoreDoc[]> {
 
 export async function deleteDocument(uid: string, docId: string) {
   const docRef = doc(db, 'users', uid, 'documents', docId);
+  await deleteDoc(docRef);
+}
+
+// ============ Chat History Operations ============
+
+interface FirestoreChatSession {
+  title: string;
+  messages: Array<{
+    id: string;
+    role: 'user' | 'assistant';
+    content: string;
+    sources?: string[];
+    timestamp: string;
+  }>;
+  createdAt: unknown;
+  updatedAt: unknown;
+}
+
+export async function saveChatSession(
+  uid: string,
+  session: ChatSession
+): Promise<string> {
+  const docRef = doc(db, 'users', uid, 'chats', session.id);
+  const data: FirestoreChatSession = {
+    title: session.title,
+    messages: session.messages.map((m) => ({
+      id: m.id,
+      role: m.role,
+      content: m.content,
+      sources: m.sources,
+      timestamp: m.timestamp.toISOString(),
+    })),
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  };
+  await setDoc(docRef, data, { merge: true });
+  return session.id;
+}
+
+export async function getChatSessions(uid: string): Promise<ChatSession[]> {
+  const colRef = collection(db, 'users', uid, 'chats');
+  const q = query(colRef, orderBy('updatedAt', 'desc'), limit(30));
+  const snapshot = await getDocs(q);
+  return snapshot.docs.map((d) => {
+    const data = d.data() as FirestoreChatSession;
+    return {
+      id: d.id,
+      title: data.title || 'Untitled Chat',
+      messages: (data.messages || []).map((m) => ({
+        ...m,
+        timestamp: new Date(m.timestamp),
+      })),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+  });
+}
+
+export async function deleteChatSession(uid: string, chatId: string) {
+  const docRef = doc(db, 'users', uid, 'chats', chatId);
   await deleteDoc(docRef);
 }

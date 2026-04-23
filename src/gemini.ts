@@ -4,9 +4,19 @@ import type { Message } from './types';
 
 const API_KEY = process.env.GEMINI_API_KEY || '';
 
+// Use gemini-2.0-flash-lite for maximum free-tier usage (30 RPM, 1500 RPD)
+const CHAT_MODEL = 'gemini-2.0-flash-lite';
+const ANALYSIS_MODEL = 'gemini-2.0-flash-lite';
+
+// Max conversation history messages to send (keeps token usage low)
+const MAX_HISTORY_MESSAGES = 10;
+
 let genAI: GoogleGenAI | null = null;
 
-function getClient(): GoogleGenAI {
+function getClient(apiKey?: string): GoogleGenAI {
+  if (apiKey) {
+    return new GoogleGenAI({ apiKey });
+  }
   if (!genAI) {
     if (!API_KEY) {
       throw new Error('Gemini API key not configured. Please check your .env.local file.');
@@ -18,12 +28,16 @@ function getClient(): GoogleGenAI {
 
 export async function sendChatMessage(
   history: Message[],
-  userMessage: string
+  userMessage: string,
+  customApiKey?: string
 ): Promise<string> {
-  const client = getClient();
+  const client = getClient(customApiKey);
+
+  // Only send recent history to save tokens
+  const recentHistory = history.slice(-MAX_HISTORY_MESSAGES);
 
   // Build conversation history for Gemini
-  const contents = history.map((msg) => ({
+  const contents = recentHistory.map((msg) => ({
     role: msg.role === 'assistant' ? 'model' : 'user',
     parts: [{ text: msg.content }],
   }));
@@ -36,12 +50,13 @@ export async function sendChatMessage(
 
   try {
     const response = await client.models.generateContent({
-      model: 'gemini-2.0-flash',
+      model: CHAT_MODEL,
       contents,
       config: {
         systemInstruction: SYSTEM_PROMPT,
-        temperature: 0.7,
-        maxOutputTokens: 4096,
+        temperature: 0.8,
+        topP: 0.95,
+        maxOutputTokens: 3000,
       },
     });
 
@@ -51,10 +66,18 @@ export async function sendChatMessage(
     }
     return text;
   } catch (error: unknown) {
-    const err = error as { message?: string };
+    const err = error as { message?: string; status?: number };
+
+    // If rate limited, give a clear message
+    if (err.message?.includes('RESOURCE_EXHAUSTED') || err.message?.includes('429')) {
+      throw new Error(
+        'The AI is currently busy. Please wait a moment and try again. If this persists, the daily quota has been reached — try again tomorrow.'
+      );
+    }
+
     console.error('Gemini API error:', err.message);
     throw new Error(
-      'Failed to get a response from the AI. Please try again. Error: ' +
+      'Failed to get a response. Please try again. Error: ' +
         (err.message || 'Unknown error')
     );
   }
@@ -62,7 +85,7 @@ export async function sendChatMessage(
 
 /**
  * Analyze uploaded legal text using a USER-PROVIDED API key.
- * The key is NOT stored — it is used only for this one-time analysis.
+ * The key is NOT stored — used only for this one-time analysis.
  */
 export async function analyzeDocumentWithUserKey(
   userApiKey: string,
@@ -78,21 +101,20 @@ IMPORTANT: Return ONLY valid JSON, no markdown fences, no explanation.
 
 TEXT TO ANALYZE:
 ---
-${rawText.slice(0, 15000)}
+${rawText.slice(0, 12000)}
 ---`;
 
   try {
     const response = await tempClient.models.generateContent({
-      model: 'gemini-2.0-flash',
+      model: ANALYSIS_MODEL,
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       config: {
         temperature: 0.2,
-        maxOutputTokens: 2048,
+        maxOutputTokens: 1500,
       },
     });
 
     const text = response.text || '{}';
-    // Strip markdown code fences if present
     const cleaned = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
     const parsed = JSON.parse(cleaned);
     return {
