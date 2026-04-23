@@ -221,10 +221,14 @@ export const ChatView: React.FC<ChatViewProps> = ({ user }) => {
       });
     } catch (err: unknown) {
       const error = err as { message?: string };
+      const errText = error.message || 'Something went wrong. Please try again in a moment.';
+      const isQuotaError = errText.includes('quota') || errText.includes('429') || errText.includes('rate_limit') || errText.includes('busy');
       const errorMsg: Message = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
-        content: `⚠️ **I apologize for the interruption.** ${error.message || 'Something went wrong. Please try again in a moment.'}`,
+        content: isQuotaError
+          ? `⚠️ **API Rate Limit Reached**\n\nThe Groq API rate limit has been hit. Please wait a moment and try again.\n\nYou can check your usage at [Groq Console](https://console.groq.com).`
+          : `⚠️ **I apologize for the interruption.** ${errText}`,
         timestamp: new Date(),
       };
       setMessages((prev) => [...prev, errorMsg]);

@@ -1,98 +1,173 @@
-import { GoogleGenAI } from '@google/genai';
 import { SYSTEM_PROMPT } from './constants';
 import type { Message } from './types';
 
-const API_KEY = process.env.GEMINI_API_KEY || '';
+// Groq API configuration
+const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
+const GROQ_API_KEY = import.meta.env.VITE_GROQ_API_KEY || '';
 
-// Use gemini-2.0-flash-lite for maximum free-tier usage (30 RPM, 1500 RPD)
-const CHAT_MODEL = 'gemini-2.0-flash-lite';
-const ANALYSIS_MODEL = 'gemini-2.0-flash-lite';
+// Model fallback chain (Gemma models on Groq)
+const PRIMARY_MODEL = 'gemma2-9b-it';
+const FALLBACK_MODEL = 'gemma-7b-it';
 
 // Max conversation history messages to send (keeps token usage low)
 const MAX_HISTORY_MESSAGES = 10;
 
-let genAI: GoogleGenAI | null = null;
+// Retry configuration
+const MAX_RETRIES = 1;
+const RETRY_DELAY_MS = 1500;
 
-function getClient(apiKey?: string): GoogleGenAI {
-  if (apiKey) {
-    return new GoogleGenAI({ apiKey });
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRateLimitError(msg: string): boolean {
+  return (
+    msg.includes('rate_limit') ||
+    msg.includes('429') ||
+    msg.includes('Too Many') ||
+    msg.includes('quota') ||
+    msg.includes('limit')
+  );
+}
+
+interface GroqMessage {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+}
+
+/**
+ * Attempt a single Groq API call
+ */
+async function attemptGenerate(
+  apiKey: string,
+  model: string,
+  messages: GroqMessage[],
+): Promise<string> {
+  const response = await fetch(GROQ_API_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      messages,
+      temperature: 0.8,
+      top_p: 0.95,
+      max_tokens: 3000,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.text();
+    throw new Error(`Groq API error ${response.status}: ${errorBody}`);
   }
-  if (!genAI) {
-    if (!API_KEY) {
-      throw new Error('Gemini API key not configured. Please check your .env.local file.');
-    }
-    genAI = new GoogleGenAI({ apiKey: API_KEY });
+
+  const data = await response.json();
+  const text = data.choices?.[0]?.message?.content;
+
+  if (!text) {
+    throw new Error('Empty response from Groq');
   }
-  return genAI;
+  return text;
 }
 
 export async function sendChatMessage(
   history: Message[],
   userMessage: string,
-  customApiKey?: string
+  customApiKey?: string,
 ): Promise<string> {
-  const client = getClient(customApiKey);
+  const apiKey = customApiKey || GROQ_API_KEY;
+
+  if (!apiKey) {
+    throw new Error(
+      'Groq API key not configured. Add VITE_GROQ_API_KEY to your .env.local file. ' +
+      'Get a free key at https://console.groq.com/keys',
+    );
+  }
 
   // Only send recent history to save tokens
   const recentHistory = history.slice(-MAX_HISTORY_MESSAGES);
 
-  // Build conversation history for Gemini
-  const contents = recentHistory.map((msg) => ({
-    role: msg.role === 'assistant' ? 'model' : 'user',
-    parts: [{ text: msg.content }],
-  }));
+  // Build conversation history for Groq (OpenAI-compatible format)
+  const messages: GroqMessage[] = [
+    { role: 'system', content: SYSTEM_PROMPT },
+  ];
+
+  for (const msg of recentHistory) {
+    messages.push({
+      role: msg.role === 'assistant' ? 'assistant' : 'user',
+      content: msg.content,
+    });
+  }
 
   // Add the new user message
-  contents.push({
+  messages.push({
     role: 'user',
-    parts: [{ text: userMessage }],
+    content: userMessage,
   });
 
-  try {
-    const response = await client.models.generateContent({
-      model: CHAT_MODEL,
-      contents,
-      config: {
-        systemInstruction: SYSTEM_PROMPT,
-        temperature: 0.8,
-        topP: 0.95,
-        maxOutputTokens: 3000,
-      },
-    });
+  const modelsToTry = [PRIMARY_MODEL, FALLBACK_MODEL];
+  let lastError: Error | null = null;
 
-    const text = response.text;
-    if (!text) {
-      throw new Error('Empty response from Gemini');
+  // Try each model
+  for (const model of modelsToTry) {
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        console.log(`Trying Groq ${model} (attempt ${attempt + 1})`);
+        return await attemptGenerate(apiKey, model, messages);
+      } catch (error: unknown) {
+        const err = error as { message?: string };
+        const msg = err.message || '';
+        lastError = error as Error;
+
+        console.warn(`Groq ${model} attempt ${attempt + 1} failed:`, msg);
+
+        if (isRateLimitError(msg)) {
+          if (attempt < MAX_RETRIES) {
+            await sleep(RETRY_DELAY_MS);
+            continue;
+          }
+          // Exhausted retries — try next model
+          break;
+        }
+
+        // Non-rate-limit error — try next model
+        break;
+      }
     }
-    return text;
-  } catch (error: unknown) {
-    const err = error as { message?: string; status?: number };
+  }
 
-    // If rate limited, give a clear message
-    if (err.message?.includes('RESOURCE_EXHAUSTED') || err.message?.includes('429')) {
-      throw new Error(
-        'The AI is currently busy. Please wait a moment and try again. If this persists, the daily quota has been reached — try again tomorrow.'
-      );
-    }
+  // All models and retries exhausted
+  const errMsg = (lastError as { message?: string })?.message || '';
 
-    console.error('Gemini API error:', err.message);
+  if (isRateLimitError(errMsg)) {
     throw new Error(
-      'Failed to get a response. Please try again. Error: ' +
-        (err.message || 'Unknown error')
+      'API rate limit reached. Please wait a moment and try again. ' +
+      'You can check your usage at https://console.groq.com',
     );
   }
+
+  if (errMsg.includes('invalid_api_key') || errMsg.includes('401') || errMsg.includes('403')) {
+    throw new Error(
+      'Invalid Groq API key. Please check your VITE_GROQ_API_KEY in .env.local. ' +
+      'Get a free key at https://console.groq.com/keys',
+    );
+  }
+
+  console.error('Groq API error:', errMsg);
+  throw new Error(
+    'Failed to get a response. Please try again. Error: ' + (errMsg || 'Unknown error'),
+  );
 }
 
 /**
- * Analyze uploaded legal text using a USER-PROVIDED API key.
- * The key is NOT stored — used only for this one-time analysis.
+ * Analyze uploaded legal text using the Groq API.
  */
 export async function analyzeDocumentWithUserKey(
   userApiKey: string,
-  rawText: string
+  rawText: string,
 ): Promise<{ title: string; sections: string[] }> {
-  const tempClient = new GoogleGenAI({ apiKey: userApiKey });
-
   const prompt = `You are a legal document analyzer specializing in Indian law. Analyze the following legal text and return a JSON object with:
 1. "title" — a short descriptive title for this legal document
 2. "sections" — an array of strings, each being a key section/provision/clause found in the text
@@ -105,16 +180,31 @@ ${rawText.slice(0, 12000)}
 ---`;
 
   try {
-    const response = await tempClient.models.generateContent({
-      model: ANALYSIS_MODEL,
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      config: {
-        temperature: 0.2,
-        maxOutputTokens: 1500,
+    const messages: GroqMessage[] = [
+      { role: 'user', content: prompt },
+    ];
+
+    const response = await fetch(GROQ_API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${userApiKey}`,
       },
+      body: JSON.stringify({
+        model: PRIMARY_MODEL,
+        messages,
+        temperature: 0.2,
+        max_tokens: 1500,
+      }),
     });
 
-    const text = response.text || '{}';
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(`Groq API error ${response.status}: ${errorBody}`);
+    }
+
+    const data = await response.json();
+    const text = data.choices?.[0]?.message?.content || '{}';
     const cleaned = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
     const parsed = JSON.parse(cleaned);
     return {
@@ -125,7 +215,7 @@ ${rawText.slice(0, 12000)}
     const err = error as { message?: string };
     throw new Error(
       'Failed to analyze document. Please check your API key and try again. Error: ' +
-        (err.message || 'Unknown error')
+        (err.message || 'Unknown error'),
     );
   }
 }
