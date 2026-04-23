@@ -219,3 +219,114 @@ ${rawText.slice(0, 12000)}
     );
   }
 }
+
+// ============ Law Verification using App's Groq API Key ============
+
+const VALID_CATEGORIES = ['constitutional', 'civil', 'criminal', 'corporate', 'labour'];
+
+export interface LawVerificationResult {
+  isLegitimate: boolean;
+  title: string;
+  category: string;
+  sections: string[];
+  summary: string;
+  reason: string;
+}
+
+/**
+ * Verify and categorize an uploaded law using the app's Groq API key.
+ * This checks if the text is a legitimate Indian law/legal document,
+ * categorizes it, and extracts metadata.
+ */
+export async function verifyAndCategorizeLaw(
+  rawText: string,
+): Promise<LawVerificationResult> {
+  if (!GROQ_API_KEY) {
+    throw new Error('Groq API key not configured. Contact the administrator.');
+  }
+
+  const prompt = `You are an expert Indian legal document verifier and classifier. Analyze the following text and determine:
+
+1. Is this a legitimate Indian law, legal statute, act, code, amendment, ordinance, or legal provision? (true/false)
+2. What is the proper title of this law/document?
+3. Which category does it best fit into? Choose EXACTLY ONE from: constitutional, civil, criminal, corporate, labour
+4. What are the key sections/provisions/clauses? (array of strings)
+5. Write a 2-3 sentence summary of this law.
+6. Brief reason for your legitimacy determination.
+
+Return ONLY valid JSON in this exact format:
+{
+  "isLegitimate": true,
+  "title": "The Indian Contract Act, 1872",
+  "category": "civil",
+  "sections": ["Section 1: Short title", "Section 2: Interpretation clause"],
+  "summary": "This act governs the law of contracts in India...",
+  "reason": "This is a well-known Indian statute..."
+}
+
+IMPORTANT: Return ONLY valid JSON, no markdown fences, no explanation. The category MUST be one of: constitutional, civil, criminal, corporate, labour.
+
+TEXT TO VERIFY:
+---
+${rawText.slice(0, 15000)}
+---`;
+
+  const messages: GroqMessage[] = [
+    { role: 'user', content: prompt },
+  ];
+
+  // Try with primary model, fallback to secondary
+  const modelsToTry = [PRIMARY_MODEL, FALLBACK_MODEL];
+  let lastError: Error | null = null;
+
+  for (const model of modelsToTry) {
+    try {
+      const response = await fetch(GROQ_API_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${GROQ_API_KEY}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages,
+          temperature: 0.1,
+          max_tokens: 2000,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorBody = await response.text();
+        throw new Error(`Groq API error ${response.status}: ${errorBody}`);
+      }
+
+      const data = await response.json();
+      const text = data.choices?.[0]?.message?.content || '{}';
+      const cleaned = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+      const parsed = JSON.parse(cleaned);
+
+      // Validate category
+      const category = VALID_CATEGORIES.includes(parsed.category)
+        ? parsed.category
+        : 'constitutional';
+
+      return {
+        isLegitimate: parsed.isLegitimate === true,
+        title: parsed.title || 'Untitled Law',
+        category,
+        sections: Array.isArray(parsed.sections) ? parsed.sections : [],
+        summary: parsed.summary || 'No summary available.',
+        reason: parsed.reason || 'No reason provided.',
+      };
+    } catch (error: unknown) {
+      lastError = error as Error;
+      console.warn(`Law verification with ${model} failed:`, (error as Error).message);
+      continue;
+    }
+  }
+
+  throw new Error(
+    'Failed to verify law. Please try again. Error: ' +
+      ((lastError as { message?: string })?.message || 'Unknown error'),
+  );
+}

@@ -1,4 +1,4 @@
-export type View = 'login' | 'chat' | 'upload' | 'repository';
+export type View = 'login' | 'chat' | 'upload' | 'repository' | 'admin';
 
 export interface Message {
   id: string;
@@ -43,4 +43,25 @@ export interface UserProfile {
   displayName: string | null;
   email: string | null;
   photoURL: string | null;
+}
+
+// Admin email that has admin access
+export const ADMIN_EMAIL = 'nevilsanish@gmail.com';
+
+export interface VerifiedLaw {
+  id: string;
+  title: string;
+  content: string;
+  category: string; // maps to LEGAL_DOMAINS id (constitutional, civil, criminal, corporate, labour)
+  sections: string[];
+  summary: string;
+  status: 'pending' | 'approved' | 'rejected';
+  uploadedBy: string; // user uid
+  uploaderName: string;
+  uploaderEmail: string;
+  verifiedAt: Date | null;
+  approvedAt: Date | null;
+  approvedBy: string | null;
+  createdAt: Date;
+  type: 'file' | 'text';
 }

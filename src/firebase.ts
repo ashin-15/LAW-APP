@@ -17,12 +17,16 @@ import {
   deleteDoc,
   doc,
   setDoc,
+  getDoc,
+  updateDoc,
   query,
   orderBy,
+  where,
   serverTimestamp,
   limit,
+  Timestamp,
 } from 'firebase/firestore';
-import type { Message, ChatSession } from './types';
+import type { Message, ChatSession, VerifiedLaw } from './types';
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -169,4 +173,154 @@ export async function getChatSessions(uid: string): Promise<ChatSession[]> {
 export async function deleteChatSession(uid: string, chatId: string) {
   const docRef = doc(db, 'users', uid, 'chats', chatId);
   await deleteDoc(docRef);
+}
+
+// ============ Law Verification & Approval Operations ============
+
+interface FirestoreLaw {
+  title: string;
+  content: string;
+  category: string;
+  sections: string[];
+  summary: string;
+  status: 'pending' | 'approved' | 'rejected';
+  uploadedBy: string;
+  uploaderName: string;
+  uploaderEmail: string;
+  verifiedAt: Timestamp | null;
+  approvedAt: Timestamp | null;
+  approvedBy: string | null;
+  createdAt: Timestamp;
+  type: 'file' | 'text';
+}
+
+function firestoreLawToVerifiedLaw(id: string, data: FirestoreLaw): VerifiedLaw {
+  return {
+    id,
+    title: data.title || 'Untitled Law',
+    content: data.content || '',
+    category: data.category || 'constitutional',
+    sections: data.sections || [],
+    summary: data.summary || '',
+    status: data.status || 'pending',
+    uploadedBy: data.uploadedBy || '',
+    uploaderName: data.uploaderName || 'Unknown',
+    uploaderEmail: data.uploaderEmail || '',
+    verifiedAt: data.verifiedAt ? data.verifiedAt.toDate() : null,
+    approvedAt: data.approvedAt ? data.approvedAt.toDate() : null,
+    approvedBy: data.approvedBy || null,
+    createdAt: data.createdAt ? data.createdAt.toDate() : new Date(),
+    type: data.type || 'text',
+  };
+}
+
+/**
+ * Submit a law for verification and admin approval.
+ * Stored in the global `laws` collection.
+ */
+export async function submitLawForVerification(
+  uid: string,
+  uploaderName: string,
+  uploaderEmail: string,
+  lawData: {
+    title: string;
+    content: string;
+    category: string;
+    sections: string[];
+    summary: string;
+    type: 'file' | 'text';
+  }
+): Promise<string> {
+  const colRef = collection(db, 'laws');
+  const docRef = await addDoc(colRef, {
+    ...lawData,
+    status: 'pending',
+    uploadedBy: uid,
+    uploaderName,
+    uploaderEmail,
+    verifiedAt: serverTimestamp(),
+    approvedAt: null,
+    approvedBy: null,
+    createdAt: serverTimestamp(),
+  });
+  return docRef.id;
+}
+
+/**
+ * Get all pending laws (for admin review)
+ */
+export async function getPendingLaws(): Promise<VerifiedLaw[]> {
+  const colRef = collection(db, 'laws');
+  const q = query(colRef, where('status', '==', 'pending'), orderBy('createdAt', 'desc'));
+  const snapshot = await getDocs(q);
+  return snapshot.docs.map((d) => firestoreLawToVerifiedLaw(d.id, d.data() as FirestoreLaw));
+}
+
+/**
+ * Get all laws (for admin — all statuses)
+ */
+export async function getAllLaws(): Promise<VerifiedLaw[]> {
+  const colRef = collection(db, 'laws');
+  const q = query(colRef, orderBy('createdAt', 'desc'));
+  const snapshot = await getDocs(q);
+  return snapshot.docs.map((d) => firestoreLawToVerifiedLaw(d.id, d.data() as FirestoreLaw));
+}
+
+/**
+ * Approve a law (admin action)
+ */
+export async function approveLaw(lawId: string, adminUid: string): Promise<void> {
+  const docRef = doc(db, 'laws', lawId);
+  await updateDoc(docRef, {
+    status: 'approved',
+    approvedAt: serverTimestamp(),
+    approvedBy: adminUid,
+  });
+}
+
+/**
+ * Reject a law (admin action)
+ */
+export async function rejectLaw(lawId: string, adminUid: string): Promise<void> {
+  const docRef = doc(db, 'laws', lawId);
+  await updateDoc(docRef, {
+    status: 'rejected',
+    approvedAt: serverTimestamp(),
+    approvedBy: adminUid,
+  });
+}
+
+/**
+ * Get all approved laws (for Study section — global)
+ */
+export async function getApprovedLaws(): Promise<VerifiedLaw[]> {
+  const colRef = collection(db, 'laws');
+  const q = query(colRef, where('status', '==', 'approved'), orderBy('createdAt', 'desc'));
+  const snapshot = await getDocs(q);
+  return snapshot.docs.map((d) => firestoreLawToVerifiedLaw(d.id, d.data() as FirestoreLaw));
+}
+
+/**
+ * Get approved laws by category (for Study section filtering)
+ */
+export async function getApprovedLawsByCategory(category: string): Promise<VerifiedLaw[]> {
+  const colRef = collection(db, 'laws');
+  const q = query(
+    colRef,
+    where('status', '==', 'approved'),
+    where('category', '==', category),
+    orderBy('createdAt', 'desc')
+  );
+  const snapshot = await getDocs(q);
+  return snapshot.docs.map((d) => firestoreLawToVerifiedLaw(d.id, d.data() as FirestoreLaw));
+}
+
+/**
+ * Get laws uploaded by a specific user
+ */
+export async function getUserSubmittedLaws(uid: string): Promise<VerifiedLaw[]> {
+  const colRef = collection(db, 'laws');
+  const q = query(colRef, where('uploadedBy', '==', uid), orderBy('createdAt', 'desc'));
+  const snapshot = await getDocs(q);
+  return snapshot.docs.map((d) => firestoreLawToVerifiedLaw(d.id, d.data() as FirestoreLaw));
 }

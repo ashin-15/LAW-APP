@@ -10,9 +10,11 @@ import {
   Menu,
   X,
   Plus,
+  Shield,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import type { View, UserProfile } from '../types';
+import { ADMIN_EMAIL } from '../types';
 
 interface SidebarProps {
   currentView: View;
@@ -21,14 +23,18 @@ interface SidebarProps {
   onSignOut: () => void;
 }
 
-const navItems = [
-  { id: 'chat' as View, label: 'Chat', icon: MessageSquare },
-  { id: 'upload' as View, label: 'Upload Law', icon: Upload },
-  { id: 'repository' as View, label: 'Study Law', icon: BookOpen },
-];
-
 export const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onSignOut }) => {
   const [mobileOpen, setMobileOpen] = React.useState(false);
+  const isAdmin = user?.email === ADMIN_EMAIL;
+
+  const navItems = [
+    { id: 'chat' as View, label: 'Chat', icon: MessageSquare },
+    { id: 'upload' as View, label: 'Upload Law', icon: Upload },
+    { id: 'repository' as View, label: 'Study Law', icon: BookOpen },
+    ...(isAdmin
+      ? [{ id: 'admin' as View, label: 'Admin Panel', icon: Shield }]
+      : []),
+  ];
 
   const handleNav = (view: View) => {
     setView(view);
@@ -67,12 +73,21 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, on
             onClick={() => handleNav(item.id)}
             className={`flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all duration-200 ${
               currentView === item.id
-                ? 'bg-slate-800 text-white shadow-inner scale-[0.98]'
+                ? item.id === 'admin'
+                  ? 'bg-amber-500/20 text-amber-300 shadow-inner scale-[0.98]'
+                  : 'bg-slate-800 text-white shadow-inner scale-[0.98]'
+                : item.id === 'admin'
+                ? 'text-amber-400 hover:text-amber-300 hover:bg-amber-500/10'
                 : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
             }`}
           >
             <item.icon className="w-5 h-5" />
             {item.label}
+            {item.id === 'admin' && (
+              <span className="ml-auto text-[9px] font-black bg-amber-500/20 text-amber-400 px-1.5 py-0.5 rounded uppercase tracking-wider">
+                Admin
+              </span>
+            )}
           </button>
         ))}
       </div>
@@ -95,9 +110,16 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, on
             ) : (
               <User className="w-5 h-5" />
             )}
-            <span className="text-sm truncate flex-1">
-              {user.displayName || user.email || 'User'}
-            </span>
+            <div className="flex flex-col min-w-0 flex-1">
+              <span className="text-sm truncate">
+                {user.displayName || user.email || 'User'}
+              </span>
+              {isAdmin && (
+                <span className="text-[9px] font-black text-amber-400 uppercase tracking-wider">
+                  Administrator
+                </span>
+              )}
+            </div>
           </div>
         )}
 
