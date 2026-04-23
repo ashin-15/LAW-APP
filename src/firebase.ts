@@ -3,6 +3,8 @@ import {
   getAuth,
   GoogleAuthProvider,
   signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
   signOut,
   onAuthStateChanged as _onAuthStateChanged,
   type User,
@@ -34,13 +36,30 @@ export const db = getFirestore(app);
 
 const googleProvider = new GoogleAuthProvider();
 
+// Handle redirect result on page load (for when popup fails and we fall back to redirect)
+getRedirectResult(auth).catch((error) => {
+  console.error('Redirect result error:', error);
+});
+
 export async function signInWithGoogle() {
   try {
+    // Try popup first
     const result = await signInWithPopup(auth, googleProvider);
     return result.user;
   } catch (error: unknown) {
     const err = error as { code?: string; message?: string };
-    console.error('Google sign-in error:', err.code, err.message);
+    console.error('Popup sign-in failed, trying redirect:', err.code);
+    
+    // If popup blocked or COOP error, fall back to redirect
+    if (
+      err.code === 'auth/popup-blocked' ||
+      err.code === 'auth/popup-closed-by-user' ||
+      err.code === 'auth/cancelled-popup-request' ||
+      err.message?.includes('Cross-Origin-Opener-Policy')
+    ) {
+      await signInWithRedirect(auth, googleProvider);
+      return null; // Redirect will reload the page
+    }
     throw error;
   }
 }
