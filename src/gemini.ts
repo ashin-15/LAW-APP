@@ -5,9 +5,9 @@ import type { Message } from './types';
 const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const GROQ_API_KEY = import.meta.env.VITE_GROQ_API_KEY || '';
 
-// Model fallback chain (Gemma models on Groq)
-const PRIMARY_MODEL = 'gemma2-9b-it';
-const FALLBACK_MODEL = 'gemma-7b-it';
+// Model fallback chain (Llama 3 models on Groq)
+const PRIMARY_MODEL = 'llama-3.3-70b-versatile';
+const FALLBACK_MODEL = 'llama-3.1-8b-instant';
 
 // Max conversation history messages to send (keeps token usage low)
 const MAX_HISTORY_MESSAGES = 10;
