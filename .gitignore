@@ -29,3 +29,9 @@ npm-debug.log*
 
 # Vite
 vite.config.ts.timestamp-*
+
+# Firebase
+.firebase/
+firebase-debug.log
+firestore-debug.log
+ui-debug.log

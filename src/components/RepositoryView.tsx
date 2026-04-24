@@ -3,97 +3,104 @@ import { motion, AnimatePresence } from 'motion/react';
 import {
   Search,
   Library,
-  FileText,
   ChevronDown,
   ChevronUp,
   BookOpen,
   Loader2,
   X,
   Scale,
+  FileText,
 } from 'lucide-react';
 import { LEGAL_DOMAINS } from '../constants';
-import { getApprovedLaws } from '../firebase';
+import { subscribeToAllLaws } from '../firebase';
 import type { VerifiedLaw } from '../types';
+import type { OrganizedLawTopic } from '../lawOrganization';
+import {
+  classifyLawSource,
+  matchesTopicSearch,
+  organizeLawsBySource,
+} from '../lawOrganization';
 
 export const RepositoryView: React.FC = () => {
   const [searchQuery, setSearchQuery] = React.useState('');
   const [approvedLaws, setApprovedLaws] = React.useState<VerifiedLaw[]>([]);
   const [loading, setLoading] = React.useState(true);
-  const [expandedLawId, setExpandedLawId] = React.useState<string | null>(null);
+  const [expandedTopicId, setExpandedTopicId] = React.useState<string | null>(null);
   const [selectedCategory, setSelectedCategory] = React.useState<string | null>(null);
-  const [previewLaw, setPreviewLaw] = React.useState<VerifiedLaw | null>(null);
+  const [previewTopic, setPreviewTopic] = React.useState<OrganizedLawTopic | null>(null);
 
   React.useEffect(() => {
-    loadApprovedLaws();
+    setLoading(true);
+
+    const unsubscribe = subscribeToAllLaws(
+      (laws) => {
+        setApprovedLaws(laws.filter((law) => law.status === 'approved'));
+        setLoading(false);
+      },
+      (error) => {
+        console.error('Error loading approved laws:', error);
+        setLoading(false);
+      },
+    );
+
+    return () => unsubscribe();
   }, []);
 
-  const loadApprovedLaws = async () => {
-    setLoading(true);
-    try {
-      const laws = await getApprovedLaws();
-      setApprovedLaws(laws);
-    } catch (err) {
-      console.error('Error loading approved laws:', err);
-    } finally {
-      setLoading(false);
-    }
-  };
+  const visibleDomains = React.useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
 
-  // Group laws by category
-  const lawsByCategory = React.useMemo(() => {
-    const grouped: Record<string, VerifiedLaw[]> = {};
-    for (const domain of LEGAL_DOMAINS) {
-      grouped[domain.id] = [];
-    }
-    for (const law of approvedLaws) {
-      if (grouped[law.category]) {
-        grouped[law.category].push(law);
-      } else {
-        // Fallback to constitutional if category doesn't match
-        grouped['constitutional']?.push(law);
-      }
-    }
-    return grouped;
+    return LEGAL_DOMAINS
+      .filter((domain) => !selectedCategory || domain.id === selectedCategory)
+      .map((domain) => {
+        const domainLaws = approvedLaws.filter((law) => law.category === domain.id);
+        const groupedSources = organizeLawsBySource(domainLaws)
+          .map((group) => {
+            const sourceMatches = group.source.title.toLowerCase().includes(query);
+            const filteredTopics = !query
+              ? group.topics
+              : sourceMatches
+              ? group.topics
+              : group.topics.filter((topic) => matchesTopicSearch(topic, query));
+
+            return {
+              ...group,
+              topics: filteredTopics,
+            };
+          })
+          .filter((group) => group.topics.length > 0);
+
+        const domainMatches =
+          query.length > 0 &&
+          (domain.title.toLowerCase().includes(query) ||
+            domain.description.toLowerCase().includes(query));
+
+        return {
+          domain,
+          groups: groupedSources,
+          totalTopics: groupedSources.reduce((total, group) => total + group.topics.length, 0),
+          hasMatch: groupedSources.length > 0 || domainMatches,
+        };
+      })
+      .filter((item) => {
+        if (selectedCategory) return true;
+        if (!searchQuery.trim()) return item.groups.length > 0;
+        return item.hasMatch;
+      });
+  }, [approvedLaws, searchQuery, selectedCategory]);
+
+  const categoryCounts = React.useMemo(() => {
+    return LEGAL_DOMAINS.reduce<Record<string, number>>((counts, domain) => {
+      counts[domain.id] = organizeLawsBySource(
+        approvedLaws.filter((law) => law.category === domain.id),
+      ).reduce((total, group) => total + group.topics.length, 0);
+      return counts;
+    }, {});
   }, [approvedLaws]);
 
-  // Filter by search query
-  const filteredDomains = React.useMemo(() => {
-    if (!searchQuery.trim() && !selectedCategory) return LEGAL_DOMAINS;
-    
-    let domains = LEGAL_DOMAINS;
-    if (selectedCategory) {
-      domains = domains.filter((d) => d.id === selectedCategory);
-    }
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
-      domains = domains.filter((d) => {
-        const domainMatch =
-          d.title.toLowerCase().includes(q) ||
-          d.description.toLowerCase().includes(q);
-        const lawsMatch = (lawsByCategory[d.id] || []).some(
-          (law) =>
-            law.title.toLowerCase().includes(q) ||
-            law.summary.toLowerCase().includes(q) ||
-            law.sections.some((s) => s.toLowerCase().includes(q))
-        );
-        return domainMatch || lawsMatch;
-      });
-    }
-    return domains;
-  }, [searchQuery, selectedCategory, lawsByCategory]);
-
-  // Filter laws within a domain by search
-  const getFilteredLawsForDomain = (domainId: string) => {
-    const laws = lawsByCategory[domainId] || [];
-    if (!searchQuery.trim()) return laws;
-    const q = searchQuery.toLowerCase();
-    return laws.filter(
-      (law) =>
-        law.title.toLowerCase().includes(q) ||
-        law.summary.toLowerCase().includes(q) ||
-        law.sections.some((s) => s.toLowerCase().includes(q))
-    );
-  };
+  const previewSource = React.useMemo(
+    () => (previewTopic ? classifyLawSource(previewTopic.laws[0]) : null),
+    [previewTopic],
+  );
 
   const getCategoryColor = (catId: string) => {
     const colors: Record<string, string> = {
@@ -121,7 +128,6 @@ export const RepositoryView: React.FC = () => {
 
   return (
     <div className="h-full overflow-y-auto">
-      {/* Header */}
       <header className="px-6 md:px-10 py-8 md:py-10 border-b border-outline-variant bg-white sticky top-0 z-30">
         <div className="max-w-7xl mx-auto">
           <div className="flex flex-col md:flex-row md:items-end justify-between gap-6">
@@ -135,7 +141,7 @@ export const RepositoryView: React.FC = () => {
                     Study Law
                   </h1>
                   <p className="text-on-surface-variant text-sm">
-                    {totalApproved} verified laws available • Browse by domain
+                    {totalApproved} approved laws organized into topics and section chunks
                   </p>
                 </div>
               </div>
@@ -146,13 +152,12 @@ export const RepositoryView: React.FC = () => {
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search laws, sections, statutes..."
+                placeholder="Search laws, articles, sections..."
                 className="w-full pl-12 pr-4 py-3 md:py-4 bg-surface rounded-xl border border-outline outline-none focus:ring-2 focus:ring-black/5"
               />
             </div>
           </div>
 
-          {/* Category Filter Chips */}
           <div className="flex items-center gap-2 mt-6 flex-wrap">
             <button
               onClick={() => setSelectedCategory(null)}
@@ -167,7 +172,9 @@ export const RepositoryView: React.FC = () => {
             {LEGAL_DOMAINS.map((domain) => (
               <button
                 key={domain.id}
-                onClick={() => setSelectedCategory(selectedCategory === domain.id ? null : domain.id)}
+                onClick={() =>
+                  setSelectedCategory(selectedCategory === domain.id ? null : domain.id)
+                }
                 className={`px-4 py-2 rounded-full text-xs font-bold transition-all ${
                   selectedCategory === domain.id
                     ? 'bg-slate-900 text-white shadow-md'
@@ -175,8 +182,8 @@ export const RepositoryView: React.FC = () => {
                 }`}
               >
                 {domain.title}
-                {(lawsByCategory[domain.id]?.length || 0) > 0 && (
-                  <span className="ml-1 opacity-60">({lawsByCategory[domain.id]?.length})</span>
+                {categoryCounts[domain.id] > 0 && (
+                  <span className="ml-1 opacity-60">({categoryCounts[domain.id]})</span>
                 )}
               </button>
             ))}
@@ -184,159 +191,213 @@ export const RepositoryView: React.FC = () => {
         </div>
       </header>
 
-      {/* Content */}
       <div className="p-6 md:p-10 max-w-7xl mx-auto">
         {loading ? (
           <div className="flex items-center justify-center py-20">
             <div className="flex flex-col items-center gap-4">
               <Loader2 className="w-10 h-10 animate-spin text-on-surface-variant" />
-              <p className="text-on-surface-variant font-medium">Loading study materials...</p>
+              <p className="text-on-surface-variant font-medium">
+                Loading study materials...
+              </p>
             </div>
+          </div>
+        ) : totalApproved === 0 ? (
+          <div className="rounded-2xl border border-outline-variant bg-white p-10 text-center">
+            <Scale className="w-12 h-12 mx-auto mb-4 opacity-30" />
+            <p className="font-medium text-on-surface-variant">
+              No approved laws are available yet
+            </p>
+            <p className="text-sm text-outline mt-1">
+              Upload a law and approve it in the admin panel to make it appear here.
+            </p>
+          </div>
+        ) : visibleDomains.length === 0 ? (
+          <div className="text-center py-16 text-on-surface-variant">
+            <Search className="w-12 h-12 mx-auto mb-4 opacity-30" />
+            <p className="font-medium text-lg">No results for "{searchQuery}"</p>
+            <p className="text-sm mt-1">
+              Try a different search term or browse another domain.
+            </p>
           </div>
         ) : (
           <div className="space-y-10">
-            {filteredDomains.map((domain, index) => {
-              const domainLaws = getFilteredLawsForDomain(domain.id);
-              
-              return (
-                <motion.div
-                  key={domain.id}
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: index * 0.05 }}
-                >
-                  {/* Domain Header */}
-                  <div className="flex items-center gap-4 mb-6">
-                    <div className={`w-14 h-14 rounded-2xl bg-gradient-to-br ${getCategoryColor(domain.id)} flex items-center justify-center shadow-lg`}>
-                      <Library className="w-7 h-7 text-white" />
-                    </div>
-                    <div className="flex-1">
-                      <h2 className="text-2xl md:text-3xl font-display font-bold">{domain.title}</h2>
-                      <p className="text-on-surface-variant text-sm mt-0.5">{domain.description}</p>
-                    </div>
-                    <span className="text-sm font-bold text-on-surface-variant bg-surface-container px-4 py-2 rounded-full hidden md:inline-flex">
-                      {domainLaws.length} {domainLaws.length === 1 ? 'Law' : 'Laws'}
-                    </span>
+            {visibleDomains.map(({ domain, groups, totalTopics }, index) => (
+              <motion.div
+                key={domain.id}
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: index * 0.05 }}
+              >
+                <div className="flex items-center gap-4 mb-6">
+                  <div
+                    className={`w-14 h-14 rounded-2xl bg-gradient-to-br ${getCategoryColor(
+                      domain.id,
+                    )} flex items-center justify-center shadow-lg`}
+                  >
+                    <Library className="w-7 h-7 text-white" />
                   </div>
+                  <div className="flex-1">
+                    <h2 className="text-2xl md:text-3xl font-display font-bold">
+                      {domain.title}
+                    </h2>
+                    <p className="text-on-surface-variant text-sm mt-0.5">
+                      {domain.description}
+                    </p>
+                  </div>
+                  <span className="text-sm font-bold text-on-surface-variant bg-surface-container px-4 py-2 rounded-full hidden md:inline-flex">
+                    {totalTopics} {totalTopics === 1 ? 'Topic' : 'Topics'}
+                  </span>
+                </div>
 
-                  {/* Domain Laws */}
-                  {domainLaws.length === 0 ? (
-                    <div className={`rounded-2xl p-8 text-center border ${getCategoryBg(domain.id)}`}>
-                      <Scale className="w-10 h-10 mx-auto mb-3 opacity-30" />
-                      <p className="font-medium text-on-surface-variant">No approved laws in this category yet</p>
-                      <p className="text-sm text-outline mt-1">Upload a law and it will appear here once approved by admin</p>
-                    </div>
-                  ) : (
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      {domainLaws.map((law) => (
-                        <motion.div
-                          key={law.id}
-                          initial={{ opacity: 0, scale: 0.98 }}
-                          animate={{ opacity: 1, scale: 1 }}
-                          className="bg-white border border-outline-variant rounded-2xl shadow-sm hover:shadow-md transition-all group"
-                        >
-                          <div className="p-5 md:p-6">
-                            <div className="flex items-start justify-between mb-3">
-                              <div className="flex items-center gap-2.5">
-                                <FileText className="w-5 h-5 text-on-surface-variant shrink-0" />
-                                <h3 className="font-display font-bold text-base">{law.title}</h3>
-                              </div>
-                              <button
-                                onClick={() => setPreviewLaw(law)}
-                                className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all opacity-0 group-hover:opacity-100"
-                                title="Read Full Law"
-                              >
-                                <BookOpen className="w-4 h-4" />
-                              </button>
-                            </div>
-
-                            <p className="text-sm text-on-surface-variant leading-relaxed mb-3">
-                              {law.summary}
+                {groups.length === 0 ? (
+                  <div
+                    className={`rounded-2xl p-8 text-center border ${getCategoryBg(domain.id)}`}
+                  >
+                    <Scale className="w-10 h-10 mx-auto mb-3 opacity-30" />
+                    <p className="font-medium text-on-surface-variant">
+                      No approved laws in this domain yet
+                    </p>
+                    <p className="text-sm text-outline mt-1">
+                      Approved laws will appear here automatically after admin review.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-5">
+                    {groups.map((group) => (
+                      <div
+                        key={group.source.id}
+                        className={`rounded-2xl border p-5 md:p-6 ${getCategoryBg(domain.id)}`}
+                      >
+                        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-5">
+                          <div>
+                            <p className="text-[10px] font-black uppercase tracking-widest text-outline mb-1">
+                              Source Law
                             </p>
+                            <h3 className="text-xl md:text-2xl font-display font-bold">
+                              {group.source.title}
+                            </h3>
+                            <p className="text-sm text-on-surface-variant mt-1">
+                              Each topic expands into deduplicated {group.source.sectionLabel.toLowerCase()}
+                            </p>
+                          </div>
+                          <span className="inline-flex items-center justify-center px-3 py-1 rounded-full bg-white border border-outline-variant text-xs font-bold text-on-surface-variant">
+                            {group.topics.length} {group.topics.length === 1 ? 'Topic' : 'Topics'}
+                          </span>
+                        </div>
 
-                            {/* Sections */}
-                            {law.sections.length > 0 && (
-                              <div>
+                        <div className="space-y-3">
+                          {group.topics.map((topic) => {
+                            const isExpanded = expandedTopicId === topic.id;
+
+                            return (
+                              <div
+                                key={topic.id}
+                                className="bg-white border border-outline-variant rounded-2xl shadow-sm overflow-hidden"
+                              >
                                 <button
-                                  onClick={() => setExpandedLawId(expandedLawId === law.id ? null : law.id)}
-                                  className="flex items-center gap-1 text-xs font-bold text-on-surface-variant hover:text-on-surface transition-colors mb-2"
+                                  onClick={() =>
+                                    setExpandedTopicId(isExpanded ? null : topic.id)
+                                  }
+                                  className="w-full text-left p-5 md:p-6 flex items-start justify-between gap-4 hover:bg-slate-50 transition-colors"
                                 >
-                                  {expandedLawId === law.id ? (
-                                    <ChevronUp className="w-3.5 h-3.5" />
-                                  ) : (
-                                    <ChevronDown className="w-3.5 h-3.5" />
-                                  )}
-                                  {law.sections.length} Sections
+                                  <div className="min-w-0">
+                                    <p className="text-[10px] font-black uppercase tracking-widest text-outline mb-1">
+                                      {topic.primaryReference}
+                                    </p>
+                                    <h4 className="font-display font-bold text-base md:text-lg leading-tight">
+                                      {topic.title}
+                                    </h4>
+                                    <p className="text-sm text-on-surface-variant mt-2">
+                                      {topic.summary}
+                                    </p>
+                                    <div className="flex items-center gap-2 flex-wrap mt-3">
+                                      <span className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-surface-container text-on-surface-variant border border-outline-variant">
+                                        {topic.chunks.length} section chunks
+                                      </span>
+                                      <span className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-surface-container-low text-on-surface-variant border border-outline-variant">
+                                        {topic.type === 'mixed'
+                                          ? 'Mixed source'
+                                          : topic.type === 'file'
+                                          ? 'Uploaded file'
+                                          : 'Text entry'}
+                                      </span>
+                                    </div>
+                                  </div>
+                                  <div className="flex items-center gap-2 shrink-0">
+                                    <button
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        setPreviewTopic(topic);
+                                      }}
+                                      className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                                      title="Read topic"
+                                    >
+                                      <BookOpen className="w-4 h-4" />
+                                    </button>
+                                    {isExpanded ? (
+                                      <ChevronUp className="w-5 h-5 text-slate-400" />
+                                    ) : (
+                                      <ChevronDown className="w-5 h-5 text-slate-400" />
+                                    )}
+                                  </div>
                                 </button>
-                                <AnimatePresence>
-                                  {expandedLawId === law.id && (
+
+                                <AnimatePresence initial={false}>
+                                  {isExpanded && (
                                     <motion.div
                                       initial={{ height: 0, opacity: 0 }}
                                       animate={{ height: 'auto', opacity: 1 }}
                                       exit={{ height: 0, opacity: 0 }}
-                                      className="overflow-hidden"
+                                      className="overflow-hidden border-t border-slate-100"
                                     >
-                                      <div className="flex flex-wrap gap-1.5">
-                                        {law.sections.map((s, i) => (
-                                          <span
-                                            key={i}
-                                            className="px-2 py-0.5 bg-surface-container rounded text-[10px] font-bold text-on-surface-variant border border-outline-variant"
+                                      <div className="p-5 md:p-6 space-y-3 bg-slate-50/70">
+                                        {topic.chunks.map((chunk) => (
+                                          <div
+                                            key={chunk.id}
+                                            className="rounded-xl border border-outline-variant bg-white p-4"
                                           >
-                                            {s.length > 40 ? s.slice(0, 40) + '...' : s}
-                                          </span>
+                                            <div className="flex items-center justify-between gap-3 mb-2">
+                                              <h5 className="font-bold text-sm md:text-base">
+                                                {chunk.heading}
+                                              </h5>
+                                              <span className="text-[10px] font-black uppercase tracking-widest text-outline">
+                                                Chunk
+                                              </span>
+                                            </div>
+                                            <p className="text-sm text-on-surface-variant leading-relaxed">
+                                              {chunk.preview}
+                                            </p>
+                                          </div>
                                         ))}
                                       </div>
                                     </motion.div>
                                   )}
                                 </AnimatePresence>
                               </div>
-                            )}
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
 
-                            <div className="mt-3 pt-3 border-t border-slate-100 flex items-center justify-between">
-                              <span className="text-[10px] font-black uppercase tracking-widest text-outline">
-                                {law.type === 'file' ? 'Uploaded File' : 'Text Entry'}
-                              </span>
-                              <button
-                                onClick={() => setPreviewLaw(law)}
-                                className="text-xs font-bold text-black hover:underline"
-                              >
-                                Read Full Law →
-                              </button>
-                            </div>
-                          </div>
-                        </motion.div>
-                      ))}
-                    </div>
-                  )}
-
-                  {/* Domain Divider */}
-                  <div className="border-b border-outline-variant mt-10" />
-                </motion.div>
-              );
-            })}
-
-            {/* No results */}
-            {filteredDomains.length === 0 && searchQuery && (
-              <div className="text-center py-16 text-on-surface-variant">
-                <Search className="w-12 h-12 mx-auto mb-4 opacity-30" />
-                <p className="font-medium text-lg">No results for "{searchQuery}"</p>
-                <p className="text-sm mt-1">Try a different search term or browse all domains.</p>
-              </div>
-            )}
+                <div className="border-b border-outline-variant mt-10" />
+              </motion.div>
+            ))}
           </div>
         )}
       </div>
 
-      {/* Law Preview Modal */}
       <AnimatePresence>
-        {previewLaw && (
+        {previewTopic && previewSource && (
           <>
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               className="fixed inset-0 bg-black/50 z-[100]"
-              onClick={() => setPreviewLaw(null)}
+              onClick={() => setPreviewTopic(null)}
             />
             <motion.div
               initial={{ opacity: 0, scale: 0.95 }}
@@ -346,44 +407,69 @@ export const RepositoryView: React.FC = () => {
             >
               <div className="flex items-center justify-between p-6 border-b border-slate-200">
                 <div className="flex items-center gap-3 min-w-0">
-                  <div className={`w-10 h-10 rounded-lg bg-gradient-to-br ${getCategoryColor(previewLaw.category)} flex items-center justify-center`}>
+                  <div
+                    className={`w-10 h-10 rounded-lg bg-gradient-to-br ${getCategoryColor(
+                      previewTopic.category,
+                    )} flex items-center justify-center`}
+                  >
                     <FileText className="w-5 h-5 text-white" />
                   </div>
                   <div className="min-w-0">
-                    <h2 className="text-xl font-display font-bold truncate">{previewLaw.title}</h2>
+                    <h2 className="text-xl font-display font-bold truncate">
+                      {previewTopic.primaryReference}
+                    </h2>
                     <p className="text-xs text-on-surface-variant">
-                      {LEGAL_DOMAINS.find((d) => d.id === previewLaw.category)?.title || previewLaw.category}
+                      {previewSource.title}
                     </p>
                   </div>
                 </div>
                 <button
-                  onClick={() => setPreviewLaw(null)}
+                  onClick={() => setPreviewTopic(null)}
                   className="p-2 hover:bg-slate-100 rounded-lg transition-colors shrink-0"
                 >
                   <X className="w-5 h-5" />
                 </button>
               </div>
-              {previewLaw.summary && (
+              <div className="px-6 py-3 border-b border-slate-100 flex flex-wrap gap-2 items-center">
+                <span className="px-2.5 py-1 rounded-full text-xs font-bold border bg-surface-container text-on-surface-variant border-outline-variant">
+                  {
+                    LEGAL_DOMAINS.find((domain) => domain.id === previewTopic.category)?.title ||
+                    previewTopic.category
+                  }
+                </span>
+                <span className="px-2.5 py-1 rounded-full text-xs font-bold border bg-surface-container-low text-on-surface-variant border-outline-variant">
+                  {previewTopic.chunks.length} section chunks
+                </span>
+              </div>
+              {previewTopic.summary && (
                 <div className="px-6 py-3 border-b border-slate-100 bg-surface-container-low">
-                  <p className="text-sm text-on-surface-variant font-medium">{previewLaw.summary}</p>
+                  <p className="text-sm text-on-surface-variant font-medium">
+                    {previewTopic.summary}
+                  </p>
                 </div>
               )}
-              {previewLaw.sections.length > 0 && (
-                <div className="px-6 py-3 border-b border-slate-100 flex flex-wrap gap-2">
-                  {previewLaw.sections.map((s, i) => (
-                    <span
-                      key={i}
-                      className="px-2.5 py-1 bg-secondary-container text-on-secondary-container rounded-full text-xs font-bold"
-                    >
-                      {s}
-                    </span>
-                  ))}
-                </div>
-              )}
-              <div className="flex-1 overflow-y-auto p-6">
-                <pre className="whitespace-pre-wrap text-sm text-on-surface font-sans leading-relaxed">
-                  {previewLaw.content}
-                </pre>
+              <div className="px-6 pt-4">
+                <h3 className="font-display font-bold text-lg">{previewTopic.title}</h3>
+              </div>
+              <div className="flex-1 overflow-y-auto p-6 space-y-4">
+                {previewTopic.chunks.map((chunk) => (
+                  <div
+                    key={chunk.id}
+                    className="rounded-xl border border-outline-variant bg-white p-5"
+                  >
+                    <div className="flex items-center justify-between gap-3 mb-3">
+                      <h4 className="font-display font-bold text-base md:text-lg">
+                        {chunk.heading}
+                      </h4>
+                      <span className="text-[10px] font-black uppercase tracking-widest text-outline">
+                        Section Chunk
+                      </span>
+                    </div>
+                    <pre className="whitespace-pre-wrap text-sm text-on-surface font-sans leading-relaxed">
+                      {chunk.content}
+                    </pre>
+                  </div>
+                ))}
               </div>
             </motion.div>
           </>

@@ -15,7 +15,7 @@ import {
   ChevronUp,
   Filter,
 } from 'lucide-react';
-import { getPendingLaws, getAllLaws, approveLaw, rejectLaw } from '../firebase';
+import { approveLaw, rejectLaw, subscribeToAllLaws } from '../firebase';
 import type { UserProfile, VerifiedLaw } from '../types';
 import { LEGAL_DOMAINS } from '../constants';
 
@@ -34,30 +34,26 @@ export const AdminView: React.FC<AdminViewProps> = ({ user }) => {
   const [expandedId, setExpandedId] = React.useState<string | null>(null);
 
   React.useEffect(() => {
-    loadLaws();
-  }, []);
-
-  const loadLaws = async () => {
     setLoading(true);
-    try {
-      const allLaws = await getAllLaws();
-      setLaws(allLaws);
-    } catch (err) {
-      console.error('Error loading laws:', err);
-    } finally {
-      setLoading(false);
-    }
-  };
+
+    const unsubscribe = subscribeToAllLaws(
+      (allLaws) => {
+        setLaws(allLaws);
+        setLoading(false);
+      },
+      (error) => {
+        console.error('Error loading laws:', error);
+        setLoading(false);
+      },
+    );
+
+    return () => unsubscribe();
+  }, []);
 
   const handleApprove = async (lawId: string) => {
     setActionLoading(lawId);
     try {
       await approveLaw(lawId, user.uid);
-      setLaws((prev) =>
-        prev.map((l) =>
-          l.id === lawId ? { ...l, status: 'approved' as const, approvedAt: new Date(), approvedBy: user.uid } : l
-        )
-      );
     } catch (err) {
       console.error('Error approving law:', err);
     } finally {
@@ -69,11 +65,6 @@ export const AdminView: React.FC<AdminViewProps> = ({ user }) => {
     setActionLoading(lawId);
     try {
       await rejectLaw(lawId, user.uid);
-      setLaws((prev) =>
-        prev.map((l) =>
-          l.id === lawId ? { ...l, status: 'rejected' as const, approvedAt: new Date(), approvedBy: user.uid } : l
-        )
-      );
     } catch (err) {
       console.error('Error rejecting law:', err);
     } finally {
