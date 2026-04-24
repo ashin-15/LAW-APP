@@ -22,9 +22,10 @@ import { LEGAL_DOMAINS } from '../constants';
 
 // PDF.js for reading PDF files
 import * as pdfjsLib from 'pdfjs-dist';
+import pdfWorkerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
 // Set up PDF.js worker
-pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerSrc;
 
 interface UploadViewProps {
   user: UserProfile | null;
@@ -46,7 +47,13 @@ type OcrWorker = {
 };
 
 const MIN_DIRECT_PDF_TEXT_CHARS = 25;
-const PDF_OCR_RENDER_SCALE = 2;
+const MIN_DIRECT_PDF_WORDS = 8;
+const PDF_OCR_RENDER_SCALE = 3;
+const TESSERACT_WORKER_PATH = '/tesseract/worker.min.js';
+const TESSERACT_CORE_PATH = '/tesseract-core';
+const TESSERACT_LANG_PATH = '/tesseract-lang';
+const OCR_PAGE_SEG_MODE = '6';
+const OCR_USER_DEFINED_DPI = '300';
 
 function normalizeExtractedText(text: string): string {
   return text
@@ -60,6 +67,20 @@ function normalizeExtractedText(text: string): string {
 
 function getMeaningfulCharCount(text: string): number {
   return text.replace(/[^A-Za-z0-9]/g, '').length;
+}
+
+function getWordCount(text: string): number {
+  return text
+    .split(/\s+/)
+    .map((word) => word.trim())
+    .filter(Boolean).length;
+}
+
+function shouldRunOcr(pageText: string): boolean {
+  const meaningfulChars = getMeaningfulCharCount(pageText);
+  const wordCount = getWordCount(pageText);
+
+  return meaningfulChars < MIN_DIRECT_PDF_TEXT_CHARS || wordCount < MIN_DIRECT_PDF_WORDS;
 }
 
 export const UploadView: React.FC<UploadViewProps> = ({ user }) => {
@@ -127,25 +148,55 @@ export const UploadView: React.FC<UploadViewProps> = ({ user }) => {
           langs?: string,
           oem?: number,
           options?: {
+            corePath?: string;
+            workerPath?: string;
+            langPath?: string;
+            gzip?: boolean;
             logger?: (message: { status: string; progress: number }) => void;
+            errorHandler?: (error: unknown) => void;
           },
         ) => Promise<OcrWorker>;
       };
 
       ocrState.worker = await tesseractModule.createWorker('eng', 1, {
+        workerPath: TESSERACT_WORKER_PATH,
+        corePath: TESSERACT_CORE_PATH,
+        langPath: TESSERACT_LANG_PATH,
+        gzip: true,
         logger: (message) => {
-          if (message.status !== 'recognizing text') return;
-          const percent = Math.round(message.progress * 100);
-          if (percent === lastOcrProgressRef.current) return;
-          lastOcrProgressRef.current = percent;
-          setUploadMessage(
-            `Running OCR on scanned PDF page ${currentOcrPage} of ${pdf.numPages}... ${percent}%`
-          );
+          if (message.status === 'recognizing text') {
+            const percent = Math.round(message.progress * 100);
+            if (percent === lastOcrProgressRef.current) return;
+            lastOcrProgressRef.current = percent;
+            setUploadMessage(
+              `Running OCR on scanned PDF page ${currentOcrPage} of ${pdf.numPages}... ${percent}%`
+            );
+            return;
+          }
+
+          if (message.status === 'loading language traineddata') {
+            setUploadMessage('Loading local OCR language data...');
+            return;
+          }
+
+          if (message.status === 'initializing api') {
+            setUploadMessage('Initializing OCR engine...');
+            return;
+          }
+
+          if (message.status === 'loading tesseract core') {
+            setUploadMessage('Loading OCR core files...');
+          }
+        },
+        errorHandler: (error) => {
+          console.error('OCR worker error:', error);
         },
       });
 
       await ocrState.worker.setParameters?.({
         preserve_interword_spaces: '1',
+        tessedit_pageseg_mode: OCR_PAGE_SEG_MODE,
+        user_defined_dpi: OCR_USER_DEFINED_DPI,
       });
 
       return ocrState.worker;
@@ -167,10 +218,14 @@ export const UploadView: React.FC<UploadViewProps> = ({ user }) => {
       canvas.height = Math.ceil(viewport.height);
 
       try {
+        context.fillStyle = '#ffffff';
+        context.fillRect(0, 0, canvas.width, canvas.height);
+
         await page.render({
           canvas: null,
           canvasContext: context,
           viewport,
+          background: '#ffffff',
         }).promise;
 
         const result = await worker.recognize(canvas);
@@ -187,7 +242,7 @@ export const UploadView: React.FC<UploadViewProps> = ({ user }) => {
         setUploadMessage(`Reading PDF page ${i} of ${pdf.numPages}...`);
 
         const pageText = await getPdfPageText(page);
-        if (getMeaningfulCharCount(pageText) >= MIN_DIRECT_PDF_TEXT_CHARS) {
+        if (!shouldRunOcr(pageText)) {
           textParts.push(pageText);
           page.cleanup();
           continue;
@@ -204,6 +259,8 @@ export const UploadView: React.FC<UploadViewProps> = ({ user }) => {
         const ocrText = await getOcrTextFromPage(page, worker);
         if (ocrText) {
           textParts.push(ocrText);
+        } else if (pageText) {
+          textParts.push(pageText);
         }
 
         page.cleanup();
@@ -309,8 +366,13 @@ export const UploadView: React.FC<UploadViewProps> = ({ user }) => {
 
       await processAndSubmit(text, 'file');
     } catch (err) {
+      console.error('File extraction failed:', err);
+      const errorMessage =
+        err instanceof Error && err.message
+          ? err.message
+          : 'Could not read file. Please try a .txt, .md, or .pdf file.';
       setUploadStep('error');
-      setUploadMessage('Could not read file. Please try a .txt, .md, or .pdf file.');
+      setUploadMessage(errorMessage);
     }
 
     // Reset file input
