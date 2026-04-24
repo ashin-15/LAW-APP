@@ -32,6 +32,36 @@ interface UploadViewProps {
 
 type UploadStep = 'idle' | 'reading' | 'verifying' | 'submitting' | 'done' | 'error';
 
+type PdfExtractionResult = {
+  text: string;
+  usedOcr: boolean;
+  ocrPages: number;
+  totalPages: number;
+};
+
+type OcrWorker = {
+  recognize: (image: HTMLCanvasElement) => Promise<{ data: { text: string } }>;
+  setParameters?: (params: Record<string, string>) => Promise<unknown>;
+  terminate: () => Promise<unknown>;
+};
+
+const MIN_DIRECT_PDF_TEXT_CHARS = 25;
+const PDF_OCR_RENDER_SCALE = 2;
+
+function normalizeExtractedText(text: string): string {
+  return text
+    .replace(/\u0000/g, ' ')
+    .replace(/\r/g, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
+}
+
+function getMeaningfulCharCount(text: string): number {
+  return text.replace(/[^A-Za-z0-9]/g, '').length;
+}
+
 export const UploadView: React.FC<UploadViewProps> = ({ user }) => {
   const [pasteText, setPasteText] = React.useState('');
   const [submittedLaws, setSubmittedLaws] = React.useState<VerifiedLaw[]>([]);
@@ -40,6 +70,7 @@ export const UploadView: React.FC<UploadViewProps> = ({ user }) => {
   const [fetchingDocs, setFetchingDocs] = React.useState(true);
   const [previewLaw, setPreviewLaw] = React.useState<VerifiedLaw | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+  const lastOcrProgressRef = React.useRef(-1);
 
   React.useEffect(() => {
     if (user?.uid) {
@@ -61,23 +92,135 @@ export const UploadView: React.FC<UploadViewProps> = ({ user }) => {
   };
 
   /**
-   * Extract text from a PDF file using pdfjs-dist
+   * Extract text from a PDF file using pdfjs-dist, falling back to OCR when a
+   * page appears to be image-based rather than text-based.
    */
-  const extractTextFromPDF = async (file: File): Promise<string> => {
+  const extractTextFromPDF = async (file: File): Promise<PdfExtractionResult> => {
     const arrayBuffer = await file.arrayBuffer();
-    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+    const pdf = await loadingTask.promise;
     const textParts: string[] = [];
+    let usedOcr = false;
+    let ocrPages = 0;
+    let currentOcrPage = 0;
+    const ocrState: { worker: OcrWorker | null } = { worker: null };
 
-    for (let i = 1; i <= pdf.numPages; i++) {
-      const page = await pdf.getPage(i);
+    const getPdfPageText = async (page: pdfjsLib.PDFPageProxy): Promise<string> => {
       const content = await page.getTextContent();
       const pageText = content.items
-        .map((item: any) => item.str)
+        .map((item) => {
+          if (!('str' in item)) return '';
+          return item.hasEOL ? `${item.str}\n` : item.str;
+        })
         .join(' ');
-      textParts.push(pageText);
+
+      return normalizeExtractedText(pageText);
+    };
+
+    const getOcrWorker = async (): Promise<OcrWorker> => {
+      if (ocrState.worker) return ocrState.worker;
+
+      setUploadMessage('Scanned PDF detected. Starting OCR engine. First use may take a little longer...');
+
+      const tesseractModule = (await import('tesseract.js')) as unknown as {
+        createWorker: (
+          langs?: string,
+          oem?: number,
+          options?: {
+            logger?: (message: { status: string; progress: number }) => void;
+          },
+        ) => Promise<OcrWorker>;
+      };
+
+      ocrState.worker = await tesseractModule.createWorker('eng', 1, {
+        logger: (message) => {
+          if (message.status !== 'recognizing text') return;
+          const percent = Math.round(message.progress * 100);
+          if (percent === lastOcrProgressRef.current) return;
+          lastOcrProgressRef.current = percent;
+          setUploadMessage(
+            `Running OCR on scanned PDF page ${currentOcrPage} of ${pdf.numPages}... ${percent}%`
+          );
+        },
+      });
+
+      await ocrState.worker.setParameters?.({
+        preserve_interword_spaces: '1',
+      });
+
+      return ocrState.worker;
+    };
+
+    const getOcrTextFromPage = async (
+      page: pdfjsLib.PDFPageProxy,
+      worker: OcrWorker,
+    ): Promise<string> => {
+      const viewport = page.getViewport({ scale: PDF_OCR_RENDER_SCALE });
+      const canvas = document.createElement('canvas');
+      const context = canvas.getContext('2d');
+
+      if (!context) {
+        throw new Error('Canvas rendering is unavailable in this browser.');
+      }
+
+      canvas.width = Math.ceil(viewport.width);
+      canvas.height = Math.ceil(viewport.height);
+
+      try {
+        await page.render({
+          canvas: null,
+          canvasContext: context,
+          viewport,
+        }).promise;
+
+        const result = await worker.recognize(canvas);
+        return normalizeExtractedText(result.data.text || '');
+      } finally {
+        canvas.width = 0;
+        canvas.height = 0;
+      }
+    };
+
+    try {
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        setUploadMessage(`Reading PDF page ${i} of ${pdf.numPages}...`);
+
+        const pageText = await getPdfPageText(page);
+        if (getMeaningfulCharCount(pageText) >= MIN_DIRECT_PDF_TEXT_CHARS) {
+          textParts.push(pageText);
+          page.cleanup();
+          continue;
+        }
+
+        usedOcr = true;
+        ocrPages += 1;
+        currentOcrPage = i;
+        lastOcrProgressRef.current = -1;
+
+        const worker = await getOcrWorker();
+        setUploadMessage(`Running OCR on scanned PDF page ${i} of ${pdf.numPages}...`);
+
+        const ocrText = await getOcrTextFromPage(page, worker);
+        if (ocrText) {
+          textParts.push(ocrText);
+        }
+
+        page.cleanup();
+      }
+    } finally {
+      if (ocrState.worker) {
+        await ocrState.worker.terminate();
+      }
+      await pdf.destroy();
     }
 
-    return textParts.join('\n\n');
+    return {
+      text: textParts.filter(Boolean).join('\n\n').trim(),
+      usedOcr,
+      ocrPages,
+      totalPages: pdf.numPages,
+    };
   };
 
   const processAndSubmit = async (rawText: string, type: 'file' | 'text') => {
@@ -146,7 +289,14 @@ export const UploadView: React.FC<UploadViewProps> = ({ user }) => {
       let text: string;
 
       if (file.name.toLowerCase().endsWith('.pdf')) {
-        text = await extractTextFromPDF(file);
+        const extraction = await extractTextFromPDF(file);
+        text = extraction.text;
+
+        if (extraction.usedOcr) {
+          setUploadMessage(
+            `OCR completed for ${extraction.ocrPages} of ${extraction.totalPages} page(s). Preparing AI analysis...`
+          );
+        }
       } else {
         text = await file.text();
       }
@@ -210,7 +360,7 @@ export const UploadView: React.FC<UploadViewProps> = ({ user }) => {
       <div className="space-y-2">
         <h1 className="text-3xl md:text-4xl font-display font-bold">Upload Law</h1>
         <p className="text-on-surface-variant max-w-2xl text-base md:text-lg">
-          Upload Indian law texts or PDFs. Each upload is <strong>verified by AI (Groq)</strong> and then submitted for admin approval. Approved laws appear in the global Study section.
+          Upload Indian law texts or PDFs, including scanned PDFs with OCR fallback. Each upload is <strong>verified by AI (Groq)</strong> and then submitted for admin approval. Approved laws appear in the global Study section.
         </p>
       </div>
 
@@ -225,7 +375,7 @@ export const UploadView: React.FC<UploadViewProps> = ({ user }) => {
           <div>
             <h3 className="font-bold text-indigo-900">AI-Powered Verification</h3>
             <p className="text-sm text-indigo-700 mt-1">
-              Your uploaded law is automatically verified using <strong>Groq AI</strong>. The AI checks if the document is a legitimate Indian law, categorizes it, and extracts key sections. Once verified, it goes to the admin for final approval.
+              Your uploaded law is automatically verified using <strong>Groq AI</strong>. The app extracts text directly from standard PDFs and uses OCR for scanned PDFs, then the AI checks if the document is a legitimate Indian law, categorizes it, and extracts key sections. Once verified, it goes to the admin for final approval.
             </p>
             <div className="flex items-center gap-6 mt-3 text-xs font-bold text-indigo-600">
               <span className="flex items-center gap-1.5">
@@ -325,7 +475,7 @@ export const UploadView: React.FC<UploadViewProps> = ({ user }) => {
               {isProcessing ? 'Processing...' : 'Drop legal documents here'}
             </h3>
             <p className="text-on-surface-variant mb-6 text-center text-sm">
-              Or click to browse your computer
+              Or click to browse your computer. Scanned PDFs are supported via OCR.
             </p>
             <div className="flex gap-4 text-[11px] font-bold text-on-surface-variant border-t border-outline-variant pt-4 w-full justify-center opacity-60">
               <span className="flex items-center gap-1"><FileUp className="w-3.5 h-3.5" /> PDF</span>
