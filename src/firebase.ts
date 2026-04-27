@@ -13,6 +13,7 @@ import {
   getFirestore,
   collection,
   addDoc,
+  getDoc,
   getDocs,
   deleteDoc,
   doc,
@@ -218,7 +219,7 @@ export async function saveChatSession(
 ): Promise<string> {
   try {
     const docRef = doc(db, 'users', uid, 'chats', session.id);
-    const data: FirestoreChatSession = {
+    const data: Record<string, unknown> = {
       title: session.title,
       messages: session.messages.map((m) => ({
         id: m.id,
@@ -227,9 +228,16 @@ export async function saveChatSession(
         sources: m.sources,
         timestamp: m.timestamp instanceof Date ? m.timestamp.toISOString() : String(m.timestamp),
       })),
-      createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
+      // Always include createdAt — on first write it sets the value,
+      // on subsequent writes merge:true preserves the existing field only
+      // if we DON'T include it. So we conditionally add it below.
     };
+    // Include createdAt only for brand new sessions
+    const existing = await getDoc(docRef);
+    if (!existing.exists()) {
+      data.createdAt = serverTimestamp();
+    }
     await setDoc(docRef, data, { merge: true });
     return session.id;
   } catch (error) {
@@ -241,7 +249,6 @@ export async function saveChatSession(
 export async function getChatSessions(uid: string): Promise<ChatSession[]> {
   try {
     const colRef = collection(db, 'users', uid, 'chats');
-    // Simple query without orderBy to avoid index requirements
     const snapshot = await getDocs(colRef);
     const sessions = snapshot.docs.map((d) => {
       const data = d.data() as FirestoreChatSession;
@@ -256,13 +263,49 @@ export async function getChatSessions(uid: string): Promise<ChatSession[]> {
         updatedAt: toDate(data.updatedAt),
       };
     });
-    // Sort client-side by updatedAt descending
     sessions.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
-    return sessions.slice(0, 30);
+    return sessions;
   } catch (error) {
     logFirestoreError('getChatSessions', error);
-    return []; // Return empty array instead of crashing
+    return [];
   }
+}
+
+/**
+ * Real-time subscription to chat sessions so UI stays in sync.
+ */
+export function subscribeToChatSessions(
+  uid: string,
+  callback: (sessions: ChatSession[]) => void,
+  onError?: (error: Error) => void,
+) {
+  const colRef = collection(db, 'users', uid, 'chats');
+
+  return onSnapshot(
+    colRef,
+    (snapshot) => {
+      const sessions = snapshot.docs.map((d) => {
+        const data = d.data() as FirestoreChatSession;
+        return {
+          id: d.id,
+          title: data.title || 'Untitled Chat',
+          messages: (data.messages || []).map((m) => ({
+            ...m,
+            timestamp: new Date(m.timestamp),
+          })),
+          createdAt: toDate(data.createdAt),
+          updatedAt: toDate(data.updatedAt),
+        };
+      });
+      sessions.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+      callback(sessions);
+    },
+    (error) => {
+      logFirestoreError('subscribeToChatSessions', error);
+      if (onError) onError(error);
+      callback([]);
+    },
+  );
 }
 
 export async function deleteChatSession(uid: string, chatId: string) {
@@ -271,6 +314,21 @@ export async function deleteChatSession(uid: string, chatId: string) {
     await deleteDoc(docRef);
   } catch (error) {
     logFirestoreError('deleteChatSession', error);
+    throw error;
+  }
+}
+
+/**
+ * Delete all chat sessions for a user.
+ */
+export async function deleteAllChatSessions(uid: string): Promise<void> {
+  try {
+    const colRef = collection(db, 'users', uid, 'chats');
+    const snapshot = await getDocs(colRef);
+    const deletePromises = snapshot.docs.map((d) => deleteDoc(d.ref));
+    await Promise.all(deletePromises);
+  } catch (error) {
+    logFirestoreError('deleteAllChatSessions', error);
     throw error;
   }
 }

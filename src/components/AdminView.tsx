@@ -14,6 +14,7 @@ import {
   ChevronDown,
   ChevronUp,
   Filter,
+  ExternalLink,
 } from 'lucide-react';
 import { approveLaw, rejectLaw, subscribeToAllLaws } from '../firebase';
 import type { UserProfile, VerifiedLaw } from '../types';
@@ -239,6 +240,17 @@ export const AdminView: React.FC<AdminViewProps> = ({ user }) => {
                         <User className="w-3.5 h-3.5" />
                         {law.uploaderName} ({law.uploaderEmail})
                       </span>
+                      {law.pdfUrl && (
+                        <a
+                          href={law.pdfUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-xs font-bold text-blue-600 hover:text-blue-800 flex items-center gap-1 transition-colors"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5" />
+                          View Original PDF
+                        </a>
+                      )}
                       <span className="text-xs text-outline">
                         {law.createdAt.toLocaleDateString()}
                       </span>

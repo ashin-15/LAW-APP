@@ -10,6 +10,9 @@ import {
   X,
   Scale,
   FileText,
+  ExternalLink,
+  FileUp,
+  User,
 } from 'lucide-react';
 import { LEGAL_DOMAINS } from '../constants';
 import { subscribeToAllLaws } from '../firebase';
@@ -55,7 +58,7 @@ export const RepositoryView: React.FC = () => {
         const domainLaws = approvedLaws.filter((law) => law.category === domain.id);
         const groupedSources = organizeLawsBySource(domainLaws)
           .map((group) => {
-            const sourceMatches = group.source.title.toLowerCase().includes(query);
+            const sourceMatches = query && group.source.title.toLowerCase().includes(query);
             const filteredTopics = !query
               ? group.topics
               : sourceMatches
@@ -83,7 +86,7 @@ export const RepositoryView: React.FC = () => {
       })
       .filter((item) => {
         if (selectedCategory) return true;
-        if (!searchQuery.trim()) return item.groups.length > 0;
+        if (!query) return item.groups.length > 0;
         return item.hasMatch;
       });
   }, [approvedLaws, searchQuery, selectedCategory]);
@@ -101,6 +104,26 @@ export const RepositoryView: React.FC = () => {
     () => (previewTopic ? classifyLawSource(previewTopic.laws[0]) : null),
     [previewTopic],
   );
+
+  // Get unique source PDFs for a topic
+  const getTopicSources = (topic: OrganizedLawTopic) => {
+    const seen = new Set<string>();
+    return topic.laws
+      .filter((law) => {
+        const key = law.pdfUrl || law.id;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .map((law) => ({
+        id: law.id,
+        name: law.originalFileName || law.title,
+        pdfUrl: law.pdfUrl,
+        uploaderName: law.uploaderName,
+        type: law.type,
+        createdAt: law.createdAt,
+      }));
+  };
 
   const getCategoryColor = (catId: string) => {
     const colors: Record<string, string> = {
@@ -125,6 +148,11 @@ export const RepositoryView: React.FC = () => {
   };
 
   const totalApproved = approvedLaws.length;
+
+  // Clear search handler
+  const handleClearSearch = () => {
+    setSearchQuery('');
+  };
 
   return (
     <div className="h-full overflow-y-auto">
@@ -153,8 +181,16 @@ export const RepositoryView: React.FC = () => {
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Search laws, articles, sections..."
-                className="w-full pl-12 pr-4 py-3 md:py-4 bg-surface rounded-xl border border-outline outline-none focus:ring-2 focus:ring-black/5"
+                className="w-full pl-12 pr-10 py-3 md:py-4 bg-surface rounded-xl border border-outline outline-none focus:ring-2 focus:ring-black/5"
               />
+              {searchQuery && (
+                <button
+                  onClick={handleClearSearch}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 p-1 hover:bg-slate-200 rounded-full transition-colors"
+                >
+                  <X className="w-4 h-4 text-slate-500" />
+                </button>
+              )}
             </div>
           </div>
 
@@ -214,10 +250,16 @@ export const RepositoryView: React.FC = () => {
         ) : visibleDomains.length === 0 ? (
           <div className="text-center py-16 text-on-surface-variant">
             <Search className="w-12 h-12 mx-auto mb-4 opacity-30" />
-            <p className="font-medium text-lg">No results for "{searchQuery}"</p>
+            <p className="font-medium text-lg">No results for &quot;{searchQuery}&quot;</p>
             <p className="text-sm mt-1">
               Try a different search term or browse another domain.
             </p>
+            <button
+              onClick={handleClearSearch}
+              className="mt-4 px-4 py-2 bg-slate-900 text-white text-sm font-bold rounded-lg hover:bg-slate-800 transition-colors"
+            >
+              Clear Search
+            </button>
           </div>
         ) : (
           <div className="space-y-10">
@@ -288,6 +330,7 @@ export const RepositoryView: React.FC = () => {
                         <div className="space-y-3">
                           {group.topics.map((topic) => {
                             const isExpanded = expandedTopicId === topic.id;
+                            const sources = getTopicSources(topic);
 
                             return (
                               <div
@@ -321,7 +364,37 @@ export const RepositoryView: React.FC = () => {
                                           ? 'Uploaded file'
                                           : 'Text entry'}
                                       </span>
+                                      {/* Source PDF badges */}
+                                      {sources.some((s) => s.pdfUrl) && (
+                                        <span className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200 flex items-center gap-1">
+                                          <FileUp className="w-3 h-3" />
+                                          PDF Source Available
+                                        </span>
+                                      )}
                                     </div>
+                                    {/* Source info line */}
+                                    {sources.length > 0 && (
+                                      <div className="flex items-center gap-3 flex-wrap mt-2">
+                                        {sources.map((src) => (
+                                          <span key={src.id} className="text-[10px] text-on-surface-variant flex items-center gap-1">
+                                            <User className="w-3 h-3" />
+                                            {src.uploaderName}
+                                            {src.pdfUrl && (
+                                              <a
+                                                href={src.pdfUrl}
+                                                target="_blank"
+                                                rel="noopener noreferrer"
+                                                className="ml-1 text-blue-600 hover:text-blue-800 font-bold inline-flex items-center gap-0.5"
+                                                onClick={(e) => e.stopPropagation()}
+                                              >
+                                                <ExternalLink className="w-3 h-3" />
+                                                {src.name.length > 30 ? src.name.slice(0, 27) + '...' : src.name}
+                                              </a>
+                                            )}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    )}
                                   </div>
                                   <div className="flex items-center gap-2 shrink-0">
                                     <button
@@ -351,6 +424,40 @@ export const RepositoryView: React.FC = () => {
                                       className="overflow-hidden border-t border-slate-100"
                                     >
                                       <div className="p-5 md:p-6 space-y-3 bg-slate-50/70">
+                                        {/* Source documents section */}
+                                        {sources.length > 0 && sources.some((s) => s.pdfUrl) && (
+                                          <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-xl">
+                                            <p className="text-[10px] font-black uppercase tracking-widest text-blue-600 mb-2">
+                                              Original Source Documents
+                                            </p>
+                                            <div className="space-y-2">
+                                              {sources.filter((s) => s.pdfUrl).map((src) => (
+                                                <a
+                                                  key={src.id}
+                                                  href={src.pdfUrl!}
+                                                  target="_blank"
+                                                  rel="noopener noreferrer"
+                                                  className="flex items-center justify-between gap-3 p-3 bg-white border border-blue-100 rounded-lg hover:border-blue-400 hover:shadow-sm transition-all group"
+                                                >
+                                                  <div className="flex items-center gap-2 min-w-0">
+                                                    <FileText className="w-4 h-4 text-blue-600 shrink-0" />
+                                                    <div className="min-w-0">
+                                                      <p className="text-sm font-bold text-blue-800 truncate">
+                                                        {src.name}
+                                                      </p>
+                                                      <p className="text-[10px] text-blue-600">
+                                                        Uploaded by {src.uploaderName} • {src.createdAt.toLocaleDateString()}
+                                                      </p>
+                                                    </div>
+                                                  </div>
+                                                  <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-blue-600 text-white text-[10px] font-bold rounded-md group-hover:bg-blue-700 transition-colors shrink-0">
+                                                    <ExternalLink className="w-3 h-3" /> View PDF
+                                                  </span>
+                                                </a>
+                                              ))}
+                                            </div>
+                                          </div>
+                                        )}
                                         {topic.chunks.map((chunk) => (
                                           <div
                                             key={chunk.id}
@@ -389,6 +496,7 @@ export const RepositoryView: React.FC = () => {
         )}
       </div>
 
+      {/* Preview Modal */}
       <AnimatePresence>
         {previewTopic && previewSource && (
           <>
@@ -441,6 +549,35 @@ export const RepositoryView: React.FC = () => {
                   {previewTopic.chunks.length} section chunks
                 </span>
               </div>
+              {/* Source PDF links in modal */}
+              {(() => {
+                const sources = getTopicSources(previewTopic).filter((s) => s.pdfUrl);
+                if (sources.length === 0) return null;
+                return (
+                  <div className="px-6 py-3 border-b border-slate-100 bg-blue-50">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-blue-600 mb-2">
+                      Original Source Documents
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      {sources.map((src) => (
+                        <a
+                          key={src.id}
+                          href={src.pdfUrl!}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white text-xs font-bold rounded-lg hover:bg-blue-700 transition-colors"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5" />
+                          {src.name.length > 40 ? src.name.slice(0, 37) + '...' : src.name}
+                        </a>
+                      ))}
+                    </div>
+                    <p className="text-[10px] text-blue-600 mt-1.5">
+                      Uploaded by {sources.map((s) => s.uploaderName).join(', ')}
+                    </p>
+                  </div>
+                );
+              })()}
               {previewTopic.summary && (
                 <div className="px-6 py-3 border-b border-slate-100 bg-surface-container-low">
                   <p className="text-sm text-on-surface-variant font-medium">

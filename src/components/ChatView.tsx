@@ -12,12 +12,14 @@ import {
   MessageSquare,
   Clock,
   Scale,
+  AlertTriangle,
 } from 'lucide-react';
 import { sendChatMessage } from '../gemini';
 import {
   saveChatSession,
-  getChatSessions,
   deleteChatSession,
+  deleteAllChatSessions,
+  subscribeToChatSessions,
 } from '../firebase';
 import type { Message, UserProfile, ChatSession } from '../types';
 
@@ -49,50 +51,55 @@ export const ChatView: React.FC<ChatViewProps> = ({ user }) => {
   const [copiedId, setCopiedId] = React.useState<string | null>(null);
   const [showHistory, setShowHistory] = React.useState(false);
 
+  // Delete all confirmation
+  const [showDeleteAll, setShowDeleteAll] = React.useState(false);
+  const [deletingAll, setDeletingAll] = React.useState(false);
+
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
-  const saveTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Load chat sessions on mount
+  // Subscribe to chat sessions in real-time (persists across logout/login)
   React.useEffect(() => {
-    if (user?.uid) {
-      loadSessions();
+    if (!user?.uid) {
+      setSessions([]);
+      setLoadingSessions(false);
+      return;
     }
+
+    setLoadingSessions(true);
+
+    const unsubscribe = subscribeToChatSessions(
+      user.uid,
+      (chatSessions) => {
+        setSessions(chatSessions);
+        setLoadingSessions(false);
+      },
+      (error) => {
+        console.error('Failed to subscribe to chat history:', error);
+        setLoadingSessions(false);
+      },
+    );
+
+    return () => unsubscribe();
   }, [user?.uid]);
 
-  const loadSessions = async () => {
-    if (!user?.uid) return;
-    setLoadingSessions(true);
-    try {
-      const chats = await getChatSessions(user.uid);
-      setSessions(chats);
-    } catch (err) {
-      console.error('Failed to load chat history:', err);
-    } finally {
-      setLoadingSessions(false);
-    }
-  };
-
-  // Auto-save current session (debounced)
-  const autoSave = React.useCallback(
-    (sessionId: string, msgs: Message[], title: string) => {
+  // Save immediately (no debounce — ensures persistence)
+  const saveSession = React.useCallback(
+    async (sessionId: string, msgs: Message[], title: string) => {
       if (!user?.uid || msgs.length === 0) return;
-      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
-      saveTimeoutRef.current = setTimeout(async () => {
-        try {
-          await saveChatSession(user.uid, {
-            id: sessionId,
-            title,
-            messages: msgs,
-            createdAt: new Date(),
-            updatedAt: new Date(),
-          });
-        } catch (err) {
-          console.error('Auto-save failed:', err);
-        }
-      }, 1500);
+      try {
+        await saveChatSession(user.uid, {
+          id: sessionId,
+          title,
+          messages: msgs,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+      } catch (err) {
+        console.error('Save failed:', err);
+      }
     },
-    [user?.uid]
+    [user?.uid],
   );
 
   const scrollToBottom = () => {
@@ -117,18 +124,33 @@ export const ChatView: React.FC<ChatViewProps> = ({ user }) => {
     setShowHistory(false);
   };
 
-  // Delete a session
+  // Delete a single session
   const handleDeleteSession = async (e: React.MouseEvent, sessionId: string) => {
     e.stopPropagation();
     if (!user?.uid) return;
     try {
       await deleteChatSession(user.uid, sessionId);
-      setSessions((prev) => prev.filter((s) => s.id !== sessionId));
+      // Real-time listener will update sessions automatically
       if (activeSessionId === sessionId) {
         startNewChat();
       }
     } catch (err) {
       console.error('Delete session failed:', err);
+    }
+  };
+
+  // Delete ALL chat history
+  const handleDeleteAllHistory = async () => {
+    if (!user?.uid) return;
+    setDeletingAll(true);
+    try {
+      await deleteAllChatSessions(user.uid);
+      startNewChat();
+      setShowDeleteAll(false);
+    } catch (err) {
+      console.error('Delete all sessions failed:', err);
+    } finally {
+      setDeletingAll(false);
     }
   };
 
@@ -158,6 +180,14 @@ export const ChatView: React.FC<ChatViewProps> = ({ user }) => {
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
     }
+
+    // Generate title from first user message
+    const title = generateTitle(
+      updatedMessages.find((m) => m.role === 'user')?.content || 'Legal Consultation',
+    );
+
+    // Save user message immediately so it persists even if AI call fails
+    await saveSession(sessionId, updatedMessages, title);
 
     try {
       const response = await sendChatMessage(updatedMessages, text);
@@ -192,33 +222,8 @@ export const ChatView: React.FC<ChatViewProps> = ({ user }) => {
       const allMessages = [...updatedMessages, aiMsg];
       setMessages(allMessages);
 
-      // Generate title from first user message
-      const title = generateTitle(
-        updatedMessages.find((m) => m.role === 'user')?.content || 'Legal Consultation'
-      );
-
-      // Auto-save and update sessions list
-      autoSave(sessionId, allMessages, title);
-      setSessions((prev) => {
-        const exists = prev.find((s) => s.id === sessionId);
-        if (exists) {
-          return prev.map((s) =>
-            s.id === sessionId
-              ? { ...s, title, messages: allMessages, updatedAt: new Date() }
-              : s
-          );
-        }
-        return [
-          {
-            id: sessionId!,
-            title,
-            messages: allMessages,
-            createdAt: new Date(),
-            updatedAt: new Date(),
-          },
-          ...prev,
-        ];
-      });
+      // Save with AI response immediately
+      await saveSession(sessionId, allMessages, title);
     } catch (err: unknown) {
       const error = err as { message?: string };
       const errText = error.message || 'Something went wrong. Please try again in a moment.';
@@ -279,9 +284,20 @@ export const ChatView: React.FC<ChatViewProps> = ({ user }) => {
         </div>
 
         <div className="flex-1 overflow-y-auto p-2">
-          <p className="px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-            Chat History
-          </p>
+          <div className="flex items-center justify-between px-3 py-2">
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+              Chat History
+            </p>
+            {sessions.length > 0 && (
+              <button
+                onClick={() => setShowDeleteAll(true)}
+                className="text-[10px] font-bold text-red-400 hover:text-red-600 transition-colors flex items-center gap-1"
+                title="Delete all chat history"
+              >
+                <Trash2 className="w-3 h-3" /> Clear All
+              </button>
+            )}
+          </div>
           {loadingSessions ? (
             <div className="px-3 py-4 text-sm text-slate-400">Loading...</div>
           ) : sessions.length === 0 ? (
@@ -302,6 +318,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ user }) => {
                 <button
                   onClick={(e) => handleDeleteSession(e, session.id)}
                   className="opacity-0 group-hover:opacity-100 p-1 text-slate-400 hover:text-red-500 transition-all shrink-0"
+                  title="Delete this chat"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                 </button>
@@ -309,6 +326,15 @@ export const ChatView: React.FC<ChatViewProps> = ({ user }) => {
             ))
           )}
         </div>
+
+        {/* Session count */}
+        {sessions.length > 0 && (
+          <div className="px-4 py-3 border-t border-slate-100 text-center">
+            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+              {sessions.length} saved {sessions.length === 1 ? 'session' : 'sessions'}
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Mobile History Toggle */}
@@ -340,20 +366,95 @@ export const ChatView: React.FC<ChatViewProps> = ({ user }) => {
                 </button>
               </div>
               <div className="flex-1 overflow-y-auto p-2">
-                {sessions.map((session) => (
+                {sessions.length === 0 ? (
+                  <div className="px-3 py-4 text-sm text-slate-400">No past consultations</div>
+                ) : (
+                  sessions.map((session) => (
+                    <button
+                      key={session.id}
+                      onClick={() => loadSession(session)}
+                      className={`w-full text-left px-3 py-2.5 rounded-lg text-sm transition-all flex items-start gap-2 mb-0.5 group ${
+                        activeSessionId === session.id
+                          ? 'bg-slate-100 text-black font-medium'
+                          : 'text-slate-600 hover:bg-slate-50'
+                      }`}
+                    >
+                      <MessageSquare className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
+                      <span className="truncate flex-1">{session.title}</span>
+                      <button
+                        onClick={(e) => handleDeleteSession(e, session.id)}
+                        className="opacity-0 group-hover:opacity-100 p-1 text-slate-400 hover:text-red-500 transition-all shrink-0"
+                        title="Delete this chat"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </button>
+                  ))
+                )}
+              </div>
+              {sessions.length > 0 && (
+                <div className="p-3 border-t border-slate-100">
                   <button
-                    key={session.id}
-                    onClick={() => loadSession(session)}
-                    className={`w-full text-left px-3 py-2.5 rounded-lg text-sm transition-all flex items-start gap-2 mb-0.5 ${
-                      activeSessionId === session.id
-                        ? 'bg-slate-100 text-black font-medium'
-                        : 'text-slate-600 hover:bg-slate-50'
-                    }`}
+                    onClick={() => { setShowHistory(false); setShowDeleteAll(true); }}
+                    className="w-full flex items-center justify-center gap-2 px-3 py-2 text-xs font-bold text-red-500 border border-red-200 rounded-lg hover:bg-red-50 transition-colors"
                   >
-                    <MessageSquare className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
-                    <span className="truncate flex-1">{session.title}</span>
+                    <Trash2 className="w-3.5 h-3.5" /> Delete All History
                   </button>
-                ))}
+                </div>
+              )}
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+
+      {/* Delete All Confirmation Modal */}
+      <AnimatePresence>
+        {showDeleteAll && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 bg-black/50 z-[200]"
+              onClick={() => !deletingAll && setShowDeleteAll(false)}
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[90%] max-w-md bg-white rounded-2xl shadow-2xl z-[201] p-6"
+            >
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center">
+                  <AlertTriangle className="w-5 h-5 text-red-600" />
+                </div>
+                <div>
+                  <h3 className="font-display font-bold text-lg">Delete All Chat History?</h3>
+                  <p className="text-sm text-on-surface-variant">
+                    This will permanently delete all {sessions.length} {sessions.length === 1 ? 'conversation' : 'conversations'}. This cannot be undone.
+                  </p>
+                </div>
+              </div>
+              <div className="flex justify-end gap-3 mt-6">
+                <button
+                  onClick={() => setShowDeleteAll(false)}
+                  disabled={deletingAll}
+                  className="px-4 py-2.5 text-sm font-bold border border-outline-variant rounded-lg hover:bg-slate-50 transition-colors disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleDeleteAllHistory}
+                  disabled={deletingAll}
+                  className="px-4 py-2.5 text-sm font-bold bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors flex items-center gap-2 disabled:opacity-50"
+                >
+                  {deletingAll ? (
+                    <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  ) : (
+                    <Trash2 className="w-4 h-4" />
+                  )}
+                  Delete All
+                </button>
               </div>
             </motion.div>
           </>
