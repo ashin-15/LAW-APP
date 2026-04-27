@@ -27,6 +27,12 @@ import {
   onSnapshot,
   enableIndexedDbPersistence,
 } from 'firebase/firestore';
+import {
+  getStorage,
+  ref,
+  uploadBytes,
+  getDownloadURL,
+} from 'firebase/storage';
 import type { Message, ChatSession, VerifiedLaw } from './types';
 
 const firebaseConfig = {
@@ -41,6 +47,7 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 export const db = getFirestore(app);
+export const storage = getStorage(app);
 
 // Enable offline persistence so Firestore works even with spotty connectivity
 enableIndexedDbPersistence(db).catch((err) => {
@@ -285,6 +292,8 @@ interface FirestoreLaw {
   approvedBy: string | null;
   createdAt: unknown;
   type: 'file' | 'text';
+  pdfUrl?: string;
+  originalFileName?: string;
 }
 
 function firestoreLawToVerifiedLaw(id: string, data: FirestoreLaw): VerifiedLaw {
@@ -304,7 +313,29 @@ function firestoreLawToVerifiedLaw(id: string, data: FirestoreLaw): VerifiedLaw 
     approvedBy: data.approvedBy || null,
     createdAt: toDate(data.createdAt),
     type: data.type || 'text',
+    pdfUrl: data.pdfUrl || undefined,
+    originalFileName: data.originalFileName || undefined,
   };
+}
+
+/**
+ * Upload a PDF file to Firebase Storage and return its download URL.
+ */
+export async function uploadPdfToStorage(
+  uid: string,
+  file: File,
+): Promise<string> {
+  try {
+    const timestamp = Date.now();
+    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const storageRef = ref(storage, `law-pdfs/${uid}/${timestamp}_${safeName}`);
+    const snapshot = await uploadBytes(storageRef, file);
+    const downloadUrl = await getDownloadURL(snapshot.ref);
+    return downloadUrl;
+  } catch (error) {
+    logFirestoreError('uploadPdfToStorage', error);
+    throw error;
+  }
 }
 
 /**
@@ -322,6 +353,8 @@ export async function submitLawForVerification(
     sections: string[];
     summary: string;
     type: 'file' | 'text';
+    pdfUrl?: string;
+    originalFileName?: string;
   }
 ): Promise<string> {
   try {

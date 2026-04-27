@@ -64,4 +64,6 @@ export interface VerifiedLaw {
   approvedBy: string | null;
   createdAt: Date;
   type: 'file' | 'text';
+  pdfUrl?: string; // Firebase Storage URL for the original uploaded PDF
+  originalFileName?: string; // Original filename of the uploaded file
 }
