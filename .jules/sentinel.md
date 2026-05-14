@@ -1,0 +1,4 @@
+## 2024-05-14 - [Authorization Bypass in Firestore create rules]
+**Vulnerability:** A missing check in the firestore `create` rule for `laws` allowed any authenticated user to create a law with `status` set to `approved` and spoof the `uploadedBy` UID, effectively bypassing the admin approval workflow.
+**Learning:** Firestore `create` rules must validate not only authentication but also the content of the `request.resource.data`. If there are restricted fields (like `status`) or user identity fields (like `uploadedBy`), these must be strictly checked against expected defaults (`'pending'`) and `request.auth.uid`.
+**Prevention:** Always ensure that `request.resource.data` validations are included in `allow create` and `allow update` rules to enforce business logic and prevent privilege escalation or data spoofing.
