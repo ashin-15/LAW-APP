@@ -49,14 +49,27 @@ export const RepositoryView: React.FC = () => {
     return () => unsubscribe();
   }, []);
 
+  // ⚡ Bolt Optimization: Memoize expensive organizeLawsBySource calculation per domain.
+  // Previously, the expensive parsing and organization ran on every search keystroke
+  // inside visibleDomains, causing significant lag on large document sets.
+  const domainGroups = React.useMemo(() => {
+    const groups: Record<string, ReturnType<typeof organizeLawsBySource>> = {};
+    LEGAL_DOMAINS.forEach((domain) => {
+      const domainLaws = approvedLaws.filter((law) => law.category === domain.id);
+      groups[domain.id] = organizeLawsBySource(domainLaws);
+    });
+    return groups;
+  }, [approvedLaws]);
+
   const visibleDomains = React.useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
 
     return LEGAL_DOMAINS
       .filter((domain) => !selectedCategory || domain.id === selectedCategory)
       .map((domain) => {
-        const domainLaws = approvedLaws.filter((law) => law.category === domain.id);
-        const groupedSources = organizeLawsBySource(domainLaws)
+        // Use the memoized groups instead of calling organizeLawsBySource again
+        const cachedGroups = domainGroups[domain.id] || [];
+        const groupedSources = cachedGroups
           .map((group) => {
             const sourceMatches = query && group.source.title.toLowerCase().includes(query);
             const filteredTopics = !query
@@ -89,16 +102,16 @@ export const RepositoryView: React.FC = () => {
         if (!query) return item.groups.length > 0;
         return item.hasMatch;
       });
-  }, [approvedLaws, searchQuery, selectedCategory]);
+  }, [domainGroups, searchQuery, selectedCategory]);
 
   const categoryCounts = React.useMemo(() => {
     return LEGAL_DOMAINS.reduce<Record<string, number>>((counts, domain) => {
-      counts[domain.id] = organizeLawsBySource(
-        approvedLaws.filter((law) => law.category === domain.id),
-      ).reduce((total, group) => total + group.topics.length, 0);
+      // Use the memoized groups instead of calling organizeLawsBySource again
+      const cachedGroups = domainGroups[domain.id] || [];
+      counts[domain.id] = cachedGroups.reduce((total, group) => total + group.topics.length, 0);
       return counts;
     }, {});
-  }, [approvedLaws]);
+  }, [domainGroups]);
 
   const previewSource = React.useMemo(
     () => (previewTopic ? classifyLawSource(previewTopic.laws[0]) : null),
