@@ -532,14 +532,6 @@ export async function getApprovedLaws(): Promise<VerifiedLaw[]> {
 }
 
 /**
- * Get approved laws by category (for Study section filtering)
- */
-export async function getApprovedLawsByCategory(category: string): Promise<VerifiedLaw[]> {
-  const approvedLaws = await getApprovedLaws();
-  return approvedLaws.filter((law) => law.category === category);
-}
-
-/**
  * Get laws uploaded by a specific user
  */
 export async function getUserSubmittedLaws(uid: string): Promise<VerifiedLaw[]> {
