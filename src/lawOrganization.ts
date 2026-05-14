@@ -40,6 +40,8 @@ export interface OrganizedLawChunk {
   preview: string;
   sortNumber: number;
   sortSuffix: string;
+  loweredHeading: string;
+  loweredContent: string;
 }
 
 export interface OrganizedLawTopic {
@@ -48,6 +50,10 @@ export interface OrganizedLawTopic {
   title: string;
   primaryReference: string;
   summary: string;
+  loweredTitle: string;
+  loweredPrimaryReference: string;
+  loweredSummary: string;
+  loweredSourceTitle: string;
   category: string;
   type: 'file' | 'text' | 'mixed';
   chunks: OrganizedLawChunk[];
@@ -500,6 +506,8 @@ function buildChunksFromAnchors(content: string, anchors: ChunkAnchor[]): Organi
       preview: createChunkPreview(chunkContent),
       sortNumber: sortParts.number,
       sortSuffix: sortParts.suffix,
+      loweredHeading: anchor.heading.toLowerCase(),
+      loweredContent: chunkContent.toLowerCase(),
     });
   }
 
@@ -536,6 +544,8 @@ function buildParagraphChunks(content: string, referenceKind: ReferenceKind): Or
       preview: createChunkPreview(cleaned),
       sortNumber: chunkIndex,
       sortSuffix: '',
+      loweredHeading: `${headingBase} ${chunkIndex}`.toLowerCase(),
+      loweredContent: cleaned.toLowerCase(),
     });
     chunkIndex += 1;
   };
@@ -702,12 +712,20 @@ export function organizeLawsBySource(laws: VerifiedLaw[]): OrganizedLawGroup[] {
 
           const typeValues = Array.from(new Set(entries.map((entry) => entry.law.type)));
 
+          const title = chooseTopicTitle(entries, source);
+          const primaryReference = representative.primaryReference;
+          const summary = chooseTopicSummary(entries);
+
           return {
             id: getTopicKey(representative),
             source,
-            title: chooseTopicTitle(entries, source),
-            primaryReference: representative.primaryReference,
-            summary: chooseTopicSummary(entries),
+            title,
+            primaryReference,
+            summary,
+            loweredTitle: title.toLowerCase(),
+            loweredPrimaryReference: primaryReference.toLowerCase(),
+            loweredSummary: summary.toLowerCase(),
+            loweredSourceTitle: source.title.toLowerCase(),
             category: representative.law.category,
             type: typeValues.length === 1 ? typeValues[0] : 'mixed',
             chunks,
@@ -737,15 +755,15 @@ export function matchesLawSearch(law: VerifiedLaw, query: string): boolean {
 export function matchesTopicSearch(topic: OrganizedLawTopic, query: string): boolean {
   const loweredQuery = query.toLowerCase();
 
-  if (topic.title.toLowerCase().includes(loweredQuery)) return true;
-  if (topic.primaryReference.toLowerCase().includes(loweredQuery)) return true;
-  if (topic.summary.toLowerCase().includes(loweredQuery)) return true;
-  if (topic.source.title.toLowerCase().includes(loweredQuery)) return true;
+  if (topic.loweredTitle.includes(loweredQuery)) return true;
+  if (topic.loweredPrimaryReference.includes(loweredQuery)) return true;
+  if (topic.loweredSummary.includes(loweredQuery)) return true;
+  if (topic.loweredSourceTitle.includes(loweredQuery)) return true;
   if (
     topic.chunks.some(
       (chunk) =>
-        chunk.heading.toLowerCase().includes(loweredQuery) ||
-        chunk.content.toLowerCase().includes(loweredQuery),
+        chunk.loweredHeading.includes(loweredQuery) ||
+        chunk.loweredContent.includes(loweredQuery),
     )
   ) {
     return true;
