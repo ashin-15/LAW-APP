@@ -1,0 +1,4 @@
+## 2025-03-08 - [CRITICAL] Prevent Authorization Bypass in Firestore Law Creation
+**Vulnerability:** Firestore rules allowed any authenticated user to create a document in the `laws` collection with `status: 'approved'`, bypassing the admin approval process. Users could also set `uploadedBy` to someone else's ID.
+**Learning:** When using a document status field (like 'pending' vs 'approved') to control visibility or workflow, Firestore rules must explicitly enforce that initial creations only set the status to the initial state ('pending'). Without this, a malicious user can write directly to the database with a completed status.
+**Prevention:** Always validate `request.resource.data` in Firestore `create` rules to ensure users cannot set restricted fields to elevated states, and verify that fields claiming to be the user's ID match `request.auth.uid`.
