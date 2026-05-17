@@ -9,7 +9,10 @@ service cloud.firestore {
     // Laws collection — authenticated users can read; authenticated users can create
     match /laws/{lawId} {
       allow read: if request.auth != null;
-      allow create: if request.auth != null;
+      // Ensure only pending status and uploadedBy matches user ID to prevent privilege escalation
+      allow create: if request.auth != null &&
+                    request.resource.data.status == 'pending' &&
+                    request.resource.data.uploadedBy == request.auth.uid;
       // Only admin can update (approve/reject)
       allow update: if request.auth != null && request.auth.token.email == 'nevilsanish@gmail.com';
     }
