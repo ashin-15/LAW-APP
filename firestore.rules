@@ -9,7 +9,9 @@ service cloud.firestore {
     // Laws collection — authenticated users can read; authenticated users can create
     match /laws/{lawId} {
       allow read: if request.auth != null;
-      allow create: if request.auth != null;
+      // Security fix: explicitly enforce that all created laws have 'pending' status
+      // to prevent users from bypassing admin approval by creating 'approved' laws
+      allow create: if request.auth != null && request.resource.data.status == 'pending';
       // Only admin can update (approve/reject)
       allow update: if request.auth != null && request.auth.token.email == 'nevilsanish@gmail.com';
     }
