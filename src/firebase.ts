@@ -335,6 +335,25 @@ export async function deleteAllChatSessions(uid: string): Promise<void> {
 
 // ============ Law Verification & Approval Operations ============
 
+/**
+ * Sanitize a URL string to ensure it uses a secure protocol (http or https).
+ * This prevents Stored XSS via malicious `javascript:` or `data:` URIs.
+ */
+function sanitizeUrl(url?: string): string | undefined {
+  if (!url) return undefined;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      return url;
+    }
+    console.warn(`[Security] Blocked potentially unsafe URL scheme: ${parsed.protocol}`);
+    return undefined;
+  } catch (e) {
+    console.warn(`[Security] Blocked invalid URL: ${url}`);
+    return undefined;
+  }
+}
+
 interface FirestoreLaw {
   title: string;
   content: string;
@@ -371,7 +390,7 @@ function firestoreLawToVerifiedLaw(id: string, data: FirestoreLaw): VerifiedLaw 
     approvedBy: data.approvedBy || null,
     createdAt: toDate(data.createdAt),
     type: data.type || 'text',
-    pdfUrl: data.pdfUrl || undefined,
+    pdfUrl: sanitizeUrl(data.pdfUrl) || undefined,
     originalFileName: data.originalFileName || undefined,
   };
 }
