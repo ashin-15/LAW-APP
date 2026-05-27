@@ -355,6 +355,12 @@ interface FirestoreLaw {
 }
 
 function firestoreLawToVerifiedLaw(id: string, data: FirestoreLaw): VerifiedLaw {
+  // Sanitize pdfUrl to prevent XSS (e.g. javascript: or data: URIs)
+  let safePdfUrl: string | undefined = data.pdfUrl || undefined;
+  if (safePdfUrl && !safePdfUrl.startsWith('http://') && !safePdfUrl.startsWith('https://')) {
+    safePdfUrl = undefined;
+  }
+
   return {
     id,
     title: data.title || 'Untitled Law',
@@ -371,7 +377,7 @@ function firestoreLawToVerifiedLaw(id: string, data: FirestoreLaw): VerifiedLaw 
     approvedBy: data.approvedBy || null,
     createdAt: toDate(data.createdAt),
     type: data.type || 'text',
-    pdfUrl: data.pdfUrl || undefined,
+    pdfUrl: safePdfUrl,
     originalFileName: data.originalFileName || undefined,
   };
 }
