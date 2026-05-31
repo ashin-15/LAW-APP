@@ -354,6 +354,23 @@ interface FirestoreLaw {
   originalFileName?: string;
 }
 
+/**
+ * Sanitizes URLs to prevent Stored XSS via malicious protocols.
+ * Ensures URL uses http: or https:, or is a valid relative path.
+ */
+function sanitizeUrl(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  try {
+    const parsed = new URL(url, 'http://dummy.com');
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      return url;
+    }
+    return undefined; // Reject javascript:, data:, etc.
+  } catch (e) {
+    return undefined;
+  }
+}
+
 function firestoreLawToVerifiedLaw(id: string, data: FirestoreLaw): VerifiedLaw {
   return {
     id,
@@ -371,7 +388,7 @@ function firestoreLawToVerifiedLaw(id: string, data: FirestoreLaw): VerifiedLaw 
     approvedBy: data.approvedBy || null,
     createdAt: toDate(data.createdAt),
     type: data.type || 'text',
-    pdfUrl: data.pdfUrl || undefined,
+    pdfUrl: sanitizeUrl(data.pdfUrl),
     originalFileName: data.originalFileName || undefined,
   };
 }
