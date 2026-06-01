@@ -2,3 +2,7 @@
 **Vulnerability:** In `firestore.rules`, the `allow create` rule for `/laws/{lawId}` only checked if the user was authenticated. This allowed any user to create a law with `status: 'approved'`, bypassing the admin verification workflow and escalating their privileges.
 **Learning:** Security rules must explicitly validate default data states (e.g., `status == 'pending'`) during document creation, not just verify authentication or role.
 **Prevention:** Always validate the data payload (`request.resource.data`) for restricted fields during `allow create` conditions to prevent users from bypassing expected workflows or role-based access controls.
+## 2025-03-05 - Stored XSS via malicious PDF URLs
+**Vulnerability:** The application rendered user-supplied `pdfUrl` values directly into `href` attributes in React components (e.g., `AdminView.tsx`, `RepositoryView.tsx`, `UploadView.tsx`) without validating the URL scheme. An attacker could directly modify the Firestore document to inject a `javascript:` or `data:` URI, leading to Stored XSS when the link is clicked.
+**Learning:** URL fields fetched from the database must be sanitized before rendering to ensure they only use secure protocols (`http:` or `https:`). Using the `URL` constructor with a fallback base URL safely validates absolute URLs while allowing legitimate relative URLs.
+**Prevention:** Always implement a `sanitizeUrl` utility function at the data extraction layer (e.g., in `firestoreLawToVerifiedLaw`) to validate protocols for all user-provided URL fields before they reach the UI components.
